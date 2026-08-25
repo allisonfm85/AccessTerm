@@ -1,20 +1,23 @@
 import AppKit
 
-/// A text view that reports only the caret's line to VoiceOver, and speaks caret movement and
-/// selection changes itself.
+/// The transcript's text view: an ordinary text area, blanked for a moment while the app
+/// moves the caret.
 ///
-/// VoiceOver announces a text area by reading its *visible* text, not its value, so
-/// accessibilityVisibleCharacterRange is what decides how much gets read; left at its default
-/// it is the whole scrollback. Both that and the value are narrowed to the caret's line here,
-/// and the role is reported as static text so VoiceOver treats the view as something to read
-/// rather than a text entry area. Everything else -- string-for-range, line-for-index,
-/// range-for-line, the character count -- is left at its default over the full text, so line,
-/// word and character navigation and selection still range over the entire transcript.
+/// An unmodified text area is what VoiceOver reads best. It follows the caret itself and reads
+/// by line, word and character, and it announces selection changes -- extending, shrinking and
+/// flipping the anchor -- in the user's own voice settings and phrasing. Reporting the view as
+/// static text, or narrowing its value and visible range to the caret's line, all buy quiet at
+/// the cost of that native reading, so none of it is done here.
+///
+/// What is left is the one thing a transcript genuinely needs: VoiceOver reads a newly focused
+/// text area's whole contents, which for a scrollback is far too much. beginQuietWindow leaves
+/// the view with nothing to read as focus arrives, and landCaret speaks the landing line.
 final class TranscriptTextView: NSTextView, NSTextViewDelegate {
 
-    /// VoiceOver does not reliably follow the caret once the view is static text, so the view
-    /// speaks what the caret moves over itself.
-    static let selfVoicedNavigation = true
+    /// Whether the view speaks caret movement and selection changes itself instead of leaving
+    /// them to VoiceOver. Off: VoiceOver does both natively, and doing it here would only
+    /// double up on what it says and add latency to the caret.
+    static let selfVoicedNavigation = false
 
     /// Where announcements go. Nil means VoiceOver; a test driver can set it to collect them.
     var announcementSink: ((String) -> Void)?
@@ -72,34 +75,47 @@ final class TranscriptTextView: NSTextView, NSTextViewDelegate {
             .trimmingCharacters(in: .whitespaces)
     }
 
-    // MARK: - Accessibility
+    // MARK: - The quiet window
 
-    /// Static text, not a text entry area. VoiceOver reads a text area's full contents when it
-    /// takes focus; static text it reads through the visible range, which is the caret's line.
-    /// The view is read-only, so there is nothing to lose in giving up the entry semantics.
-    override func accessibilityRole() -> NSAccessibility.Role? {
-        .staticText
-    }
+    /// The role is NSTextView's own: a text area, which is what gives VoiceOver its native
+    /// line, word, character and selection reading. Nothing below narrows what the view
+    /// reports either -- outside the quiet window every one of these defers to super.
+    ///
+    /// While the window is open they all report empty. VoiceOver reads a focused text area
+    /// from whichever attribute it asks for first, and which one that is varies with the
+    /// verbosity settings and the rotor, so leaving any single one of them answering in full
+    /// leaves a way for the whole transcript to be read out.
 
     // NSTextView narrows the accessibility protocol's Any? to String?.
     override func accessibilityValue() -> String? {
-        isQuiet ? "" : caretLineText
+        isQuiet ? "" : super.accessibilityValue()
     }
 
     override func accessibilityVisibleCharacterRange() -> NSRange {
-        guard !isQuiet else {
-            let length = textStorage?.mutableString.length ?? 0
-            return NSRange(location: min(selectedRange().location, length), length: 0)
-        }
-        return caretLineRange
+        guard isQuiet else { return super.accessibilityVisibleCharacterRange() }
+        let length = textStorage?.mutableString.length ?? 0
+        return NSRange(location: min(selectedRange().location, length), length: 0)
+    }
+
+    override func accessibilityNumberOfCharacters() -> Int {
+        isQuiet ? 0 : super.accessibilityNumberOfCharacters()
+    }
+
+    override func accessibilityString(for range: NSRange) -> String? {
+        isQuiet ? "" : super.accessibilityString(for: range)
+    }
+
+    override func accessibilityAttributedString(for range: NSRange) -> NSAttributedString? {
+        isQuiet ? NSAttributedString(string: "") : super.accessibilityAttributedString(for: range)
     }
 
     /// Report nothing to read for a moment.
     ///
-    /// VoiceOver reads a newly focused element at the moment focus arrives, and that read lands
-    /// on the line the caret was on beforehand -- the first line, until something has focused
-    /// the transcript. With nothing to read it stays quiet, and landCaret's high-priority
-    /// announcement supplies the landing line instead.
+    /// VoiceOver reads a newly focused element at the moment focus arrives, and for a text
+    /// area that is its whole contents -- the entire scrollback, and read from the line the
+    /// caret was on beforehand rather than the one it is about to land on. With nothing to
+    /// read it stays quiet, and landCaret's high-priority announcement supplies the landing
+    /// line instead.
     func beginQuietWindow(_ duration: TimeInterval = 0.3) {
         isQuiet = true
         quietGeneration += 1
@@ -107,7 +123,8 @@ final class TranscriptTextView: NSTextView, NSTextViewDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
             guard let self, self.quietGeneration == generation else { return }
             self.isQuiet = false
-            // Back to reporting the caret's line; tell VoiceOver so it picks the change up.
+            // The view answers in full again. Tell VoiceOver the selection moved rather than
+            // that the value changed: it resyncs to the caret without reading the text back.
             NSAccessibility.post(element: self, notification: .selectedTextChanged)
         }
     }
@@ -222,7 +239,10 @@ final class TranscriptTextView: NSTextView, NSTextViewDelegate {
     private var hasUnspokenChange = false
 
     func textViewDidChangeSelection(_ notification: Notification) {
-        guard TranscriptTextView.selfVoicedNavigation, !isSuppressingSelfVoice else {
+        // First, and before any bookkeeping: with self-voicing off this is every caret move,
+        // and VoiceOver is already speaking it. Nothing here may delay that.
+        guard TranscriptTextView.selfVoicedNavigation else { return }
+        guard !isSuppressingSelfVoice else {
             // Nothing to say, but the caret has still moved: measure the next change from here.
             lastAnnouncedSelection = clamped(selectedRange())
             hasUnspokenChange = false
