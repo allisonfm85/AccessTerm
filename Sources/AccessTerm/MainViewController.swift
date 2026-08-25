@@ -247,7 +247,9 @@ final class MainViewController: NSViewController,
     /// full-screen program's screen, where the caret has nowhere meaningful to stay.
     private func setText(_ text: String) {
         guard let storage = textView.textStorage else { return }
-        storage.setAttributedString(NSAttributedString(string: text, attributes: textAttributes))
+        textView.withoutSelfVoicing {
+            storage.setAttributedString(NSAttributedString(string: text, attributes: textAttributes))
+        }
     }
 
     /// Offset of the start of the last line that has any content. The transcript ends with a
@@ -284,8 +286,10 @@ final class MainViewController: NSViewController,
 
     private func moveCaret(to offset: Int) {
         let range = NSRange(location: max(0, min(offset, textLength)), length: 0)
-        textView.setSelectedRange(range)
-        textView.scrollRangeToVisible(range)
+        textView.withoutSelfVoicing {
+            textView.setSelectedRange(range)
+            textView.scrollRangeToVisible(range)
+        }
     }
 
     /// Move the caret, then take focus, then tell VoiceOver the selection moved. Taking focus
@@ -293,6 +297,11 @@ final class MainViewController: NSViewController,
     /// of the transcript, at launch -- because the caret has not moved yet when focus lands.
     private func landCaret(at offset: Int) {
         moveCaret(to: offset)
+        // Post before taking focus as well as after. The visible range and value are derived
+        // from the caret, so until it moves they describe whichever line it was last on --
+        // the first line, before anything has focused the transcript. Announcing the change
+        // ahead of the focus event gives VoiceOver no stale value to read.
+        NSAccessibility.post(element: textView, notification: .selectedTextChanged)
         view.window?.makeFirstResponder(textView)
         NSAccessibility.post(element: textView, notification: .selectedTextChanged)
 
@@ -316,12 +325,14 @@ final class MainViewController: NSViewController,
         // the view away from them.
         let follow = shouldFollowOutput
         let selection = textView.selectedRanges
-        storage.append(NSAttributedString(string: chunk, attributes: textAttributes))
-        // Appending past the caret should leave it alone, but restore it explicitly rather
-        // than relying on that: the caret is the reading position.
-        textView.setSelectedRanges(selection,
-                                   affinity: textView.selectionAffinity,
-                                   stillSelecting: false)
+        textView.withoutSelfVoicing {
+            storage.append(NSAttributedString(string: chunk, attributes: textAttributes))
+            // Appending past the caret should leave it alone, but restore it explicitly rather
+            // than relying on that: the caret is the reading position.
+            textView.setSelectedRanges(selection,
+                                       affinity: textView.selectionAffinity,
+                                       stillSelecting: false)
+        }
         if follow {
             textView.scrollRangeToVisible(NSRange(location: textLength, length: 0))
         }
@@ -451,13 +462,14 @@ final class MainViewController: NSViewController,
 /// word and character navigation and selection still range over the entire transcript.
 final class TranscriptTextView: NSTextView, NSTextViewDelegate {
 
-    /// Fallback for VoiceOver not tracking the caret once the view is static text: when true
-    /// the view speaks what the caret moves over itself. Off, because VoiceOver's own reading
-    /// is better when it works and two voices at once is worse than one.
-    static let selfVoicedNavigation = false
+    /// VoiceOver does not reliably follow the caret once the view is static text, so the view
+    /// speaks what the caret moves over itself.
+    static let selfVoicedNavigation = true
 
     /// Caret offset as of the last selection change, for working out what was just passed over.
     private var lastAnnouncedCaret = 0
+    /// Set while the app moves the caret or replaces the text itself.
+    private var isSuppressingSelfVoice = false
 
     // MARK: - The caret's line
 
@@ -516,11 +528,24 @@ final class TranscriptTextView: NSTextView, NSTextViewDelegate {
 
     // MARK: - Self-voiced navigation (fallback)
 
+    /// Runs a caret or contents change the app made itself without self-voicing it: the user
+    /// did not move the caret, so there is nothing for them to hear. The landing announcement
+    /// in landCaret would otherwise be said twice, once here and once there.
+    func withoutSelfVoicing(_ body: () -> Void) {
+        let wasSuppressing = isSuppressingSelfVoice
+        isSuppressingSelfVoice = true
+        body()
+        isSuppressingSelfVoice = wasSuppressing
+        // Re-anchor, so the user's next move is measured from where the caret actually is.
+        lastAnnouncedCaret = min(selectedRange().location, textStorage?.mutableString.length ?? 0)
+    }
+
     func textViewDidChangeSelection(_ notification: Notification) {
         let caret = min(selectedRange().location, textStorage?.mutableString.length ?? 0)
         let previous = lastAnnouncedCaret
         lastAnnouncedCaret = caret
         guard TranscriptTextView.selfVoicedNavigation,
+              !isSuppressingSelfVoice,
               let text = textStorage?.mutableString,
               caret != previous else { return }
 
