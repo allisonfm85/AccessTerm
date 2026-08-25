@@ -267,6 +267,15 @@ final class MainViewController: NSViewController,
         textView.scrollRangeToVisible(range)
     }
 
+    /// Move the caret, then take focus, then tell VoiceOver the selection moved. Taking focus
+    /// first makes VoiceOver read whichever line the caret was last left on -- the first line
+    /// of the transcript, at launch -- because the caret has not moved yet when focus lands.
+    private func landCaret(at offset: Int) {
+        moveCaret(to: offset)
+        view.window?.makeFirstResponder(textView)
+        NSAccessibility.post(element: textView, notification: .selectedTextChanged)
+    }
+
     private func appendLines(_ newLines: [String]) {
         guard !newLines.isEmpty else { return }
         lines.append(contentsOf: newLines)
@@ -348,9 +357,8 @@ final class MainViewController: NSViewController,
     // MARK: - Menu actions
 
     @objc func focusTranscript(_ sender: Any?) {
-        view.window?.makeFirstResponder(textView)
         // The start of the last command's echo, or the end if nothing has been run yet.
-        moveCaret(to: lastCommandOffset ?? textLength)
+        landCaret(at: lastCommandOffset ?? textLength)
     }
 
     @objc func focusCommandLine(_ sender: Any?) {
@@ -358,8 +366,7 @@ final class MainViewController: NSViewController,
     }
 
     @objc func goToEnd(_ sender: Any?) {
-        view.window?.makeFirstResponder(textView)
-        moveCaret(to: textLength)
+        landCaret(at: textLength)
     }
 
     @objc func readCurrentLine(_ sender: Any?) {
