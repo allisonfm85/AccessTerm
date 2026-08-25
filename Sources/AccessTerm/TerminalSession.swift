@@ -212,8 +212,21 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
 
     /// Text of one buffer row. Trailing spaces are kept when the next row is a wrapped
     /// continuation, because in that case they are real characters at the wrap point.
+    ///
+    /// Cells a program never wrote hold a null rune, which renders as nothing: `ls` tabs
+    /// across its columns rather than padding them, so without this the filenames run
+    /// together. Emit those cells as a single space. `skipNullCellsFollowingWide` keeps the
+    /// null padding cell that trails a double-width character from becoming a second space.
     private func rowText(_ row: Int) -> String {
         guard let line = terminal.getScrollInvariantLine(row: row) else { return "" }
-        return line.translateToString(trimRight: !isWrapped(row + 1))
+        let text = line.translateToString(
+            trimRight: !isWrapped(row + 1),
+            skipNullCellsFollowingWide: true,
+            characterProvider: { cell in
+                let character = cell.getCharacter()
+                return character == "\0" ? " " : character
+            })
+        // A literal tab would collapse to nothing in the transcript row for the same reason.
+        return text.replacingOccurrences(of: "\t", with: " ")
     }
 }
