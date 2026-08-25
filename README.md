@@ -128,6 +128,17 @@ The shell is launched with these environment variables so the tools you care abo
   blocks". Your original value is kept in `ACCESSTERM_USER_ZDOTDIR` and restored before your
   `.zshrc` finishes, so anything you launch sees the value you set.
 
+## Diagnostics
+
+Setting `ACCESSTERM_LOG` to a path makes the app append every byte it reads from the pty to
+that file, exactly as it arrived, escape sequences and all. Nothing else changes. It is there
+to compare what a program actually sent against what the transcript made of it:
+
+    ACCESSTERM_LOG=/tmp/raw.log ./build/AccessTerm.app/Contents/MacOS/AccessTerm
+
+The variable has to be in the app's own environment, so launch the binary directly rather than
+with `open`.
+
 ## Known limitations in this milestone
 
 - The terminal is a fixed 160 columns by 50 rows; it does not follow the window size.

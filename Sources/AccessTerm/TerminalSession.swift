@@ -76,6 +76,21 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
     private var updateScheduled = false
     private(set) var isRunning = false
 
+    /// Diagnostic only: when ACCESSTERM_LOG names a path, every byte the pty produces is
+    /// appended to that file exactly as it arrived, escape sequences and all. It is the
+    /// ground truth to compare the assembled transcript against when a program's output
+    /// comes out wrong. Nil when the variable is unset, which is the normal case.
+    private let rawLog: FileHandle? = {
+        guard let path = ProcessInfo.processInfo.environment["ACCESSTERM_LOG"],
+              !path.isEmpty else { return nil }
+        if !FileManager.default.fileExists(atPath: path) {
+            FileManager.default.createFile(atPath: path, contents: nil)
+        }
+        guard let handle = FileHandle(forWritingAtPath: path) else { return nil }
+        handle.seekToEndOfFile()
+        return handle
+    }()
+
     /// Wide and tall so long lines wrap less and output settles into scrollback quickly.
     init(cols: Int = 160, rows: Int = 50) {
         self.cols = cols
@@ -167,12 +182,14 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
     // MARK: - LocalProcessDelegate (pty -> us)
 
     func dataReceived(slice: ArraySlice<UInt8>) {
+        rawLog?.write(Data(slice))
         terminal.feed(buffer: slice)
         scheduleUpdate()
     }
 
     func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
         isRunning = false
+        try? rawLog?.close()
         publishUpdate()
         delegate?.session(self, didTerminateWithExitCode: exitCode)
     }
