@@ -76,9 +76,11 @@ Terminal menu also has "Send Escape" and "Send Shift-Tab" for when you'd rather 
 - Moving the caret in the transcript is read by VoiceOver itself, as in any text area: the
   line, word or character moved over, and its own wording for extending or shrinking the
   selection. The app adds nothing to it, so it follows your VoiceOver verbosity settings.
-- When the app moves the caret for you (Command-1, Command-Shift-E), the transcript reports
-  nothing readable for a third of a second, so VoiceOver has no scrollback to read out as
-  focus lands, and the landing line is announced at high priority instead.
+- When the app moves the caret for you (Command-1, Command-Shift-E), the transcript holds
+  nothing but the line being landed on for half a second, so the read VoiceOver does as focus
+  arrives is that line rather than the whole scrollback. The transcript comes back silently
+  straight after, with the caret on the landing line, and any output that arrived in the
+  meantime is added as it goes.
 - A terminal bell speaks "Attention" plus the current line at high priority. Claude Code's
   screen reader mode rings the bell when it wants input, so this is how you know it's your turn.
 - Full-screen programs (vim, htop, an attached Claude session) switch the transcript to a

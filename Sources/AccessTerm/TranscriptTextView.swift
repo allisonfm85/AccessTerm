@@ -1,17 +1,18 @@
 import AppKit
 
-/// The transcript's text view: an ordinary text area, blanked for a moment while the app
-/// moves the caret.
+/// The transcript's text view: an ordinary, unmodified text area.
 ///
-/// An unmodified text area is what VoiceOver reads best. It follows the caret itself and reads
-/// by line, word and character, and it announces selection changes -- extending, shrinking and
+/// A plain text area is what VoiceOver reads best. It follows the caret itself and reads by
+/// line, word and character, and it announces selection changes -- extending, shrinking and
 /// flipping the anchor -- in the user's own voice settings and phrasing. Reporting the view as
-/// static text, or narrowing its value and visible range to the caret's line, all buy quiet at
-/// the cost of that native reading, so none of it is done here.
+/// static text, or narrowing what its accessibility attributes report, buys quiet at the cost
+/// of that native reading, so none of it is done here.
 ///
-/// What is left is the one thing a transcript genuinely needs: VoiceOver reads a newly focused
-/// text area's whole contents, which for a scrollback is far too much. beginQuietWindow leaves
-/// the view with nothing to read as focus arrives, and landCaret speaks the landing line.
+/// The one thing a transcript needs beyond that is a way to stop VoiceOver reading the whole
+/// scrollback out when the view takes focus. Overriding the attributes it reads from did not
+/// stop it, so that is handled where the contents themselves can be controlled: see
+/// MainViewController's landCaret, which focuses the view with nothing in it but the line
+/// being landed on.
 final class TranscriptTextView: NSTextView, NSTextViewDelegate {
 
     /// Whether the view speaks caret movement and selection changes itself instead of leaving
@@ -28,9 +29,6 @@ final class TranscriptTextView: NSTextView, NSTextViewDelegate {
     private var lastAnnouncedSelection = NSRange(location: 0, length: 0)
     /// Set while the app moves the caret or replaces the text itself.
     private var isSuppressingSelfVoice = false
-    /// Set while the view should report nothing to read: see beginQuietWindow.
-    private var isQuiet = false
-    private var quietGeneration = 0
 
     // MARK: - The caret's line
 
@@ -73,60 +71,6 @@ final class TranscriptTextView: NSTextView, NSTextViewDelegate {
     private static func collapsingWhitespace(_ text: String) -> String {
         text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespaces)
-    }
-
-    // MARK: - The quiet window
-
-    /// The role is NSTextView's own: a text area, which is what gives VoiceOver its native
-    /// line, word, character and selection reading. Nothing below narrows what the view
-    /// reports either -- outside the quiet window every one of these defers to super.
-    ///
-    /// While the window is open they all report empty. VoiceOver reads a focused text area
-    /// from whichever attribute it asks for first, and which one that is varies with the
-    /// verbosity settings and the rotor, so leaving any single one of them answering in full
-    /// leaves a way for the whole transcript to be read out.
-
-    // NSTextView narrows the accessibility protocol's Any? to String?.
-    override func accessibilityValue() -> String? {
-        isQuiet ? "" : super.accessibilityValue()
-    }
-
-    override func accessibilityVisibleCharacterRange() -> NSRange {
-        guard isQuiet else { return super.accessibilityVisibleCharacterRange() }
-        let length = textStorage?.mutableString.length ?? 0
-        return NSRange(location: min(selectedRange().location, length), length: 0)
-    }
-
-    override func accessibilityNumberOfCharacters() -> Int {
-        isQuiet ? 0 : super.accessibilityNumberOfCharacters()
-    }
-
-    override func accessibilityString(for range: NSRange) -> String? {
-        isQuiet ? "" : super.accessibilityString(for: range)
-    }
-
-    override func accessibilityAttributedString(for range: NSRange) -> NSAttributedString? {
-        isQuiet ? NSAttributedString(string: "") : super.accessibilityAttributedString(for: range)
-    }
-
-    /// Report nothing to read for a moment.
-    ///
-    /// VoiceOver reads a newly focused element at the moment focus arrives, and for a text
-    /// area that is its whole contents -- the entire scrollback, and read from the line the
-    /// caret was on beforehand rather than the one it is about to land on. With nothing to
-    /// read it stays quiet, and landCaret's high-priority announcement supplies the landing
-    /// line instead.
-    func beginQuietWindow(_ duration: TimeInterval = 0.3) {
-        isQuiet = true
-        quietGeneration += 1
-        let generation = quietGeneration
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
-            guard let self, self.quietGeneration == generation else { return }
-            self.isQuiet = false
-            // The view answers in full again. Tell VoiceOver the selection moved rather than
-            // that the value changed: it resyncs to the caret without reading the text back.
-            NSAccessibility.post(element: self, notification: .selectedTextChanged)
-        }
     }
 
     // MARK: - Self-voiced navigation
