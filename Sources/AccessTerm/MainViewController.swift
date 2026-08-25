@@ -225,7 +225,16 @@ final class MainViewController: NSViewController,
         }
         let text = displayedLines[row]
         cell.stringValue = text
-        cell.setAccessibilityLabel(text.trimmingCharacters(in: .whitespaces).isEmpty ? "blank line" : nil)
+        // stringValue stays exactly as the terminal drew it so copying is faithful, but the
+        // column padding in output like `ls` is dead air when spoken; collapse the runs so
+        // VoiceOver reads the columns as words.
+        if text.trimmingCharacters(in: .whitespaces).isEmpty {
+            cell.setAccessibilityLabel("blank line")
+        } else {
+            cell.setAccessibilityLabel(text.replacingOccurrences(of: " {2,}",
+                                                                 with: " ",
+                                                                 options: .regularExpression))
+        }
         return cell
     }
 

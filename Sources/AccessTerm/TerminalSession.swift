@@ -42,8 +42,14 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
     init(cols: Int = 160, rows: Int = 50) {
         self.cols = cols
         self.rows = rows
-        terminal = Terminal(delegate: self,
-                            options: TerminalOptions(cols: cols, rows: rows, scrollback: 100_000))
+        // Terminal.init lays out tab stops against SwiftTerm's default 80 columns rather than
+        // options.cols, so a wider terminal ends up with no stops past column 72 and the first
+        // tab beyond it jumps to the last column instead. `ls` separates its columns with tabs,
+        // so that splits a filename across the wrap. Terminal.resize is the one public path that
+        // rebuilds the stops, and it returns early if the size already matches, so build the
+        // terminal at the default size and resize up to the one we actually want.
+        terminal = Terminal(delegate: self, options: TerminalOptions(scrollback: 100_000))
+        terminal.resize(cols: cols, rows: rows)
         process = LocalProcess(delegate: self, dispatchQueue: .main)
     }
 
