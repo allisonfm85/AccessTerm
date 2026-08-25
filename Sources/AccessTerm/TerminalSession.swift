@@ -144,7 +144,7 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
             var screen: [String] = []
             for r in 0..<terminal.rows {
                 guard let line = terminal.getLine(row: r) else { break }
-                screen.append(line.translateToString(trimRight: true))
+                screen.append(lineText(line, trimRight: true))
             }
             wasAlternate = true
             delegate?.session(self, didUpdate: TerminalUpdate(newLines: [], liveText: "", alternateScreen: screen))
@@ -210,23 +210,28 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         terminal.getScrollInvariantLine(row: row)?.isWrapped ?? false
     }
 
-    /// Text of one buffer row. Trailing spaces are kept when the next row is a wrapped
-    /// continuation, because in that case they are real characters at the wrap point.
+    /// Text of one buffer line.
     ///
     /// Cells a program never wrote hold a null rune, which renders as nothing: `ls` tabs
     /// across its columns rather than padding them, so without this the filenames run
     /// together. Emit those cells as a single space. `skipNullCellsFollowingWide` keeps the
     /// null padding cell that trails a double-width character from becoming a second space.
-    private func rowText(_ row: Int) -> String {
-        guard let line = terminal.getScrollInvariantLine(row: row) else { return "" }
+    private func lineText(_ line: BufferLine, trimRight: Bool) -> String {
         let text = line.translateToString(
-            trimRight: !isWrapped(row + 1),
+            trimRight: trimRight,
             skipNullCellsFollowingWide: true,
             characterProvider: { cell in
                 let character = cell.getCharacter()
                 return character == "\0" ? " " : character
             })
-        // A literal tab would collapse to nothing in the transcript row for the same reason.
+        // A literal tab would collapse to nothing in the row for the same reason.
         return text.replacingOccurrences(of: "\t", with: " ")
+    }
+
+    /// Text of one transcript row. Trailing spaces are kept when the next row is a wrapped
+    /// continuation, because in that case they are real characters at the wrap point.
+    private func rowText(_ row: Int) -> String {
+        guard let line = terminal.getScrollInvariantLine(row: row) else { return "" }
+        return lineText(line, trimRight: !isWrapped(row + 1))
     }
 }
