@@ -34,16 +34,6 @@ final class MainViewController: NSViewController,
 
     private var liveText = ""
 
-    /// The full transcript, set aside while the text view stands in for the landing line. Nil
-    /// the rest of the time, and the flag for "a landing is in flight".
-    private var landingStash: NSAttributedString?
-    /// Where the caret goes when the stash goes back.
-    private var landingOffset = 0
-    /// Output that arrived while the stash was out. `lines` is the source of truth and takes
-    /// it immediately; this is only what the text view still owes.
-    private var pendingAppends: [String] = []
-    private var landingGeneration = 0
-
     private var history: [String] = []
     private var historyIndex = 0
     private var keyMonitor: Any?
@@ -257,9 +247,6 @@ final class MainViewController: NSViewController,
     /// full-screen program's screen, where the caret has nowhere meaningful to stay.
     private func setText(_ text: String) {
         guard let storage = textView.textStorage else { return }
-        // This is the whole contents either way, so a landing read has nothing left to go
-        // back to.
-        cancelLanding()
         textView.withoutSelfVoicing {
             storage.setAttributedString(NSAttributedString(string: text, attributes: textAttributes))
         }
@@ -305,68 +292,22 @@ final class MainViewController: NSViewController,
         }
     }
 
-    /// Focus the transcript with nothing in it but the line being landed on.
+    /// Move the caret, then take focus, then tell VoiceOver the selection moved, then say
+    /// the landing line.
     ///
-    /// VoiceOver reads a text area's contents as focus arrives, by a route that does not go
-    /// through the accessibility attributes this app can override: blanking every one of them
-    /// still left the scrollback being read. What it reads is the contents, so the contents
-    /// are the landing line and nothing else for as long as that read takes. Half a second
-    /// later the transcript goes back, silently -- no accessibility notification, because
-    /// anything posted here is an invitation to read it all over again.
+    /// The announcement is what the user actually hears the landing line from. See "Known
+    /// issues" in the README: VoiceOver reads the first line of the transcript as focus
+    /// arrives, whatever the caret is doing, and nothing tried so far has stopped it.
     private func landCaret(at offset: Int) {
-        guard let storage = textView.textStorage else { return }
-        // The caret first: the landing line is read off it, and it is where the restore puts
-        // the caret back.
         moveCaret(to: offset)
-        landingOffset = textView.selectedRange().location
-        let line = textView.caretLineText
-
-        landingStash = NSAttributedString(attributedString: storage)
-        textView.withoutSelfVoicing {
-            // No trailing newline: a newline in the contents is one more thing to read.
-            storage.setAttributedString(NSAttributedString(string: line, attributes: textAttributes))
-            textView.setSelectedRange(NSRange(location: 0, length: 0))
-        }
         view.window?.makeFirstResponder(textView)
+        NSAccessibility.post(element: textView, notification: .selectedTextChanged)
 
-        landingGeneration += 1
-        let generation = landingGeneration
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            guard let self, self.landingGeneration == generation else { return }
-            self.restoreTranscript()
+        let line = textView.caretLineText
+        guard !line.isEmpty else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.announcer.announceNow(line, priority: .high)
         }
-    }
-
-    /// Puts the transcript back, with anything that arrived meanwhile, and returns the caret
-    /// to the landing offset. Deliberately posts nothing: VoiceOver has just read the landing
-    /// line, and the point of the exercise is not to make it read the rest.
-    private func restoreTranscript() {
-        guard let stash = landingStash, let storage = textView.textStorage else { return }
-        landingStash = nil
-        landingGeneration += 1
-        let queued = pendingAppends
-        pendingAppends = []
-
-        textView.withoutSelfVoicing {
-            storage.setAttributedString(stash)
-            if !queued.isEmpty {
-                storage.append(NSAttributedString(string: queued.map { $0 + "\n" }.joined(),
-                                                 attributes: textAttributes))
-            }
-            let landing = NSRange(location: min(landingOffset, storage.length), length: 0)
-            textView.setSelectedRange(landing)
-            textView.scrollRangeToVisible(landing)
-        }
-    }
-
-    /// Abandons a landing in flight without putting the stash back, for when something else is
-    /// about to write the whole transcript anyway. What is owed is dropped with it: `lines`
-    /// has those lines already, and whatever comes next is built from there.
-    private func cancelLanding() {
-        guard landingStash != nil else { return }
-        landingStash = nil
-        landingGeneration += 1
-        pendingAppends.removeAll()
     }
 
     private func appendLines(_ newLines: [String]) {
@@ -375,13 +316,6 @@ final class MainViewController: NSViewController,
         let chunk = newLines.map { $0 + "\n" }.joined()
         transcriptLength += (chunk as NSString).length
         guard screenLines == nil, let storage = textView.textStorage else { return }
-        // The text view is standing in for the landing line; writing to it now would put the
-        // scrollback back under VoiceOver mid-read. It gets these on the way out.
-        guard landingStash == nil else {
-            pendingAppends.append(contentsOf: newLines)
-            return
-        }
-
         // If the user has moved the caret back to read something, new output must not drag
         // the view away from them.
         let follow = shouldFollowOutput
@@ -458,9 +392,6 @@ final class MainViewController: NSViewController,
     // MARK: - Menu actions
 
     @objc func focusTranscript(_ sender: Any?) {
-        // Any landing still in flight goes back first: the offsets below are measured against
-        // the text view, which is showing one line until it does.
-        restoreTranscript()
         // The start of the last command's echo, or the last line with content if nothing has
         // been run yet -- not textLength, which is the empty line past the final newline and
         // would put the caret on a line with nothing to read.
@@ -472,7 +403,6 @@ final class MainViewController: NSViewController,
     }
 
     @objc func goToEnd(_ sender: Any?) {
-        restoreTranscript()
         // The start of the last line with content, not the empty line past the final newline:
         // the caret has to be on a line for VoiceOver to have anything to read.
         landCaret(at: lastLineStart)

@@ -76,11 +76,9 @@ Terminal menu also has "Send Escape" and "Send Shift-Tab" for when you'd rather 
 - Moving the caret in the transcript is read by VoiceOver itself, as in any text area: the
   line, word or character moved over, and its own wording for extending or shrinking the
   selection. The app adds nothing to it, so it follows your VoiceOver verbosity settings.
-- When the app moves the caret for you (Command-1, Command-Shift-E), the transcript holds
-  nothing but the line being landed on for half a second, so the read VoiceOver does as focus
-  arrives is that line rather than the whole scrollback. The transcript comes back silently
-  straight after, with the caret on the landing line, and any output that arrived in the
-  meantime is added as it goes.
+- When the app moves the caret for you (Command-1, Command-Shift-E), the landing line is
+  announced at high priority once focus has landed. See "Known issues" for what VoiceOver
+  says before it.
 - A terminal bell speaks "Attention" plus the current line at high priority. Claude Code's
   screen reader mode rings the bell when it wants input, so this is how you know it's your turn.
 - Full-screen programs (vim, htop, an attached Claude session) switch the transcript to a
@@ -101,6 +99,29 @@ The shell is launched with these environment variables so the tools you care abo
   command field. A "direct input" mode that passes every keystroke through is planned.
 - After 100,000 lines of scrollback the transcript stops growing. Restart the app for now.
 - No OSC 133 command blocks yet (milestone 2), so "jump to previous command" isn't in yet.
+
+## Known issues
+
+**VoiceOver reads the first line of the transcript when it takes focus.** Command-1 and
+Command-Shift-E move the caret to the line you asked for and announce it, but VoiceOver reads
+the first line of the transcript first, whatever the caret is doing. You hear the wrong line,
+then the right one.
+
+Tried, none of which stopped it:
+
+- Overriding the accessibility attributes the text could be read from -- value, visible
+  character range, number of characters, and string and attributed-string for a range --
+  either narrowed to the caret's line or blanked entirely.
+- Reporting the view as static text instead of a text area, so VoiceOver would read it
+  through the visible range rather than as an entry area.
+- A quiet window: reporting nothing readable at all for a third of a second around the focus
+  change, then restoring and posting selected-text-changed rather than value-changed.
+- Swapping the contents themselves, so the text view held only the landing line while focus
+  arrived and was put back half a second later.
+
+The read appears to come from a path that does not consult any of those. Parked: the
+high-priority announcement of the landing line is the workaround, and everything else is back
+to an ordinary text area, which is what VoiceOver navigates best.
 
 ## Milestones
 
