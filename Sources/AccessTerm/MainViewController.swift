@@ -461,11 +461,13 @@ final class TranscriptTextView: NSTextView {
         return line
     }
 
-    /// Text of the line the insertion point is on. Read off the storage's own backing string,
-    /// so answering never copies the transcript.
+    /// Text of the line the insertion point is on, with runs of spaces collapsed to one: the
+    /// column padding in output like `ls` is dead air when spoken. Read off the storage's own
+    /// backing string, so answering never copies the transcript.
     var caretLineText: String {
         guard let text = textStorage?.mutableString else { return "" }
         return text.substring(with: caretLineRange)
+            .replacingOccurrences(of: " {2,}", with: " ", options: .regularExpression)
     }
 
     // NSTextView narrows the accessibility protocol's Any? to String?.
