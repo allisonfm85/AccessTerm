@@ -43,7 +43,7 @@ final class MainViewController: NSViewController,
     /// Builds the TextKit 1 stack by hand. A plain `NSTextView(frame:)` gets TextKit 2 on
     /// macOS 13, and only TextKit 1 offers non-contiguous layout, which is what keeps a
     /// 100,000-line transcript from laying itself out in full on every append.
-    private static func makeTranscriptTextView() -> NSTextView {
+    private static func makeTranscriptTextView() -> TranscriptTextView {
         let storage = NSTextStorage()
         let layout = NSLayoutManager()
         layout.allowsNonContiguousLayout = true
@@ -293,6 +293,14 @@ final class MainViewController: NSViewController,
         moveCaret(to: offset)
         view.window?.makeFirstResponder(textView)
         NSAccessibility.post(element: textView, notification: .selectedTextChanged)
+
+        // Belt and braces. If VoiceOver still starts reading more than the landing line, a
+        // high-priority announcement a moment later interrupts it with the line itself.
+        let line = textView.caretLineText
+        guard !line.isEmpty else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.announcer.announceNow(line, priority: .high)
+        }
     }
 
     private func appendLines(_ newLines: [String]) {
@@ -430,24 +438,42 @@ final class MainViewController: NSViewController,
     }
 }
 
-/// A text view that reports only the caret's line as its accessibility value.
+/// A text view that reports only the caret's line to VoiceOver on focus.
 ///
-/// VoiceOver reads a text area's value when it takes focus, and the value of a plain
-/// NSTextView is its entire contents -- unusable once the transcript is thousands of lines
-/// long. Every other accessibility method is left at its default, so line, word and character
-/// navigation, selection, and string-for-range still work across the whole text.
+/// VoiceOver announces a text area by reading its *visible* text, not its value, so
+/// accessibilityVisibleCharacterRange is what decides how much gets read; left at its default
+/// it is the whole scrollback. Both that and the value are narrowed to the caret's line here.
+/// Everything else -- string-for-range, line-for-index, range-for-line, the character count --
+/// is left at its default over the full text, so line, word and character navigation and
+/// selection still range over the entire transcript.
 final class TranscriptTextView: NSTextView {
-    // NSTextView narrows the accessibility protocol's Any? to String?.
-    override func accessibilityValue() -> String? {
-        // mutableString is the storage's own backing string, so this reads the caret's line
-        // without copying the transcript. It is only ever read here, never mutated.
-        guard let text = textStorage?.mutableString, text.length > 0 else { return "" }
+    /// Range of the line the insertion point is on, without its trailing newline.
+    private var caretLineRange: NSRange {
+        guard let text = textStorage?.mutableString, text.length > 0 else {
+            return NSRange(location: 0, length: 0)
+        }
         let location = min(selectedRange().location, text.length)
         var line = text.paragraphRange(for: NSRange(location: location, length: 0))
         // paragraphRange includes the newline that ends the line; VoiceOver should not.
         if line.length > 0, text.character(at: line.location + line.length - 1) == 0x0a {
             line.length -= 1
         }
-        return text.substring(with: line)
+        return line
+    }
+
+    /// Text of the line the insertion point is on. Read off the storage's own backing string,
+    /// so answering never copies the transcript.
+    var caretLineText: String {
+        guard let text = textStorage?.mutableString else { return "" }
+        return text.substring(with: caretLineRange)
+    }
+
+    // NSTextView narrows the accessibility protocol's Any? to String?.
+    override func accessibilityValue() -> String? {
+        caretLineText
+    }
+
+    override func accessibilityVisibleCharacterRange() -> NSRange {
+        caretLineRange
     }
 }
