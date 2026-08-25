@@ -61,6 +61,8 @@ final class MainViewController: NSViewController,
         view.isVerticallyResizable = true
         view.isHorizontallyResizable = false
         view.autoresizingMask = [.width]
+        // Its own delegate, for the self-voiced navigation fallback.
+        view.delegate = view
         return view
     }
 
@@ -442,23 +444,44 @@ final class MainViewController: NSViewController,
 ///
 /// VoiceOver announces a text area by reading its *visible* text, not its value, so
 /// accessibilityVisibleCharacterRange is what decides how much gets read; left at its default
-/// it is the whole scrollback. Both that and the value are narrowed to the caret's line here.
-/// Everything else -- string-for-range, line-for-index, range-for-line, the character count --
-/// is left at its default over the full text, so line, word and character navigation and
-/// selection still range over the entire transcript.
-final class TranscriptTextView: NSTextView {
-    /// Range of the line the insertion point is on, without its trailing newline.
-    private var caretLineRange: NSRange {
+/// it is the whole scrollback. Both that and the value are narrowed to the caret's line here,
+/// and the role is reported as static text so VoiceOver treats the view as something to read
+/// rather than a text entry area. Everything else -- string-for-range, line-for-index,
+/// range-for-line, the character count -- is left at its default over the full text, so line,
+/// word and character navigation and selection still range over the entire transcript.
+final class TranscriptTextView: NSTextView, NSTextViewDelegate {
+
+    /// Fallback for VoiceOver not tracking the caret once the view is static text: when true
+    /// the view speaks what the caret moves over itself. Off, because VoiceOver's own reading
+    /// is better when it works and two voices at once is worse than one.
+    static let selfVoicedNavigation = false
+
+    /// Caret offset as of the last selection change, for working out what was just passed over.
+    private var lastAnnouncedCaret = 0
+
+    // MARK: - The caret's line
+
+    /// Paragraph range at an offset, including its trailing newline.
+    private func paragraphRange(at location: Int) -> NSRange {
         guard let text = textStorage?.mutableString, text.length > 0 else {
             return NSRange(location: 0, length: 0)
         }
-        let location = min(selectedRange().location, text.length)
-        var line = text.paragraphRange(for: NSRange(location: location, length: 0))
-        // paragraphRange includes the newline that ends the line; VoiceOver should not.
+        return text.paragraphRange(for: NSRange(location: min(location, text.length), length: 0))
+    }
+
+    /// Range of the line at an offset, without its trailing newline: VoiceOver reads a
+    /// newline inside the range it is given as "new line" after every line.
+    private func lineRange(at location: Int) -> NSRange {
+        guard let text = textStorage?.mutableString else { return NSRange(location: 0, length: 0) }
+        var line = paragraphRange(at: location)
         if line.length > 0, text.character(at: line.location + line.length - 1) == 0x0a {
             line.length -= 1
         }
         return line
+    }
+
+    private var caretLineRange: NSRange {
+        lineRange(at: selectedRange().location)
     }
 
     /// Text of the line the insertion point is on, with runs of spaces collapsed to one: the
@@ -466,8 +489,20 @@ final class TranscriptTextView: NSTextView {
     /// backing string, so answering never copies the transcript.
     var caretLineText: String {
         guard let text = textStorage?.mutableString else { return "" }
-        return text.substring(with: caretLineRange)
-            .replacingOccurrences(of: " {2,}", with: " ", options: .regularExpression)
+        return TranscriptTextView.collapsingSpaces(text.substring(with: caretLineRange))
+    }
+
+    private static func collapsingSpaces(_ text: String) -> String {
+        text.replacingOccurrences(of: " {2,}", with: " ", options: .regularExpression)
+    }
+
+    // MARK: - Accessibility
+
+    /// Static text, not a text entry area. VoiceOver reads a text area's full contents when it
+    /// takes focus; static text it reads through the visible range, which is the caret's line.
+    /// The view is read-only, so there is nothing to lose in giving up the entry semantics.
+    override func accessibilityRole() -> NSAccessibility.Role? {
+        .staticText
     }
 
     // NSTextView narrows the accessibility protocol's Any? to String?.
@@ -477,5 +512,33 @@ final class TranscriptTextView: NSTextView {
 
     override func accessibilityVisibleCharacterRange() -> NSRange {
         caretLineRange
+    }
+
+    // MARK: - Self-voiced navigation (fallback)
+
+    func textViewDidChangeSelection(_ notification: Notification) {
+        let caret = min(selectedRange().location, textStorage?.mutableString.length ?? 0)
+        let previous = lastAnnouncedCaret
+        lastAnnouncedCaret = caret
+        guard TranscriptTextView.selfVoicedNavigation,
+              let text = textStorage?.mutableString,
+              caret != previous else { return }
+
+        let spoken: String
+        if lineRange(at: caret) != lineRange(at: min(previous, text.length)) {
+            // Moved to another line: read the whole line, as VoiceOver would.
+            spoken = caretLineText
+        } else {
+            // Moved within the line: read what was passed over, a character or a word.
+            let range = NSRange(location: min(caret, previous), length: abs(caret - previous))
+            spoken = TranscriptTextView.collapsingSpaces(text.substring(with: range))
+        }
+        guard !spoken.isEmpty else { return }
+
+        NSAccessibility.post(
+            element: window ?? self,
+            notification: .announcementRequested,
+            userInfo: [.announcement: spoken,
+                       .priority: NSAccessibilityPriorityLevel.medium.rawValue])
     }
 }
