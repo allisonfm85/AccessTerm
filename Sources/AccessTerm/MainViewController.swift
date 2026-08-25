@@ -1,36 +1,38 @@
 import AppKit
 
 /// Three parts, top to bottom:
-///  1. Transcript: an NSTableView, one logical line per row. Arrow keys move and VoiceOver
-///     reads each row; Shift-arrows extend the selection; Command-C copies selected rows.
-///     Rows are append-only, so the reading position never moves under you.
+///  1. Transcript: a read-only NSTextView. VoiceOver drives it with the caret, so up/down read
+///     by line, Option-left/right by word and plain left/right by character, Shift-arrows
+///     extend the selection, and Command-A, Command-C and Command-F work as in any text view.
+///     Text is only ever appended, so the reading position never moves under you.
 ///  2. Current line: a label with whatever is not yet committed (usually the prompt).
 ///  3. Command line: a native text field. Enter sends the line to the shell.
 final class MainViewController: NSViewController,
-                                NSTableViewDataSource, NSTableViewDelegate,
                                 NSTextFieldDelegate, TerminalSessionDelegate,
                                 NSMenuItemValidation {
 
     let session = TerminalSession()
     private let announcer = Announcer()
 
-    private let tableView = NSTableView()
+    private let textView = MainViewController.makeTranscriptTextView()
     private let scrollView = NSScrollView()
     private let liveLabel = NSTextField(wrappingLabelWithString: "")
     private let commandField = NSTextField()
 
     private let monoFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-    private let cellIdentifier = NSUserInterfaceItemIdentifier("lineCell")
 
-    /// Committed transcript lines.
+    /// Committed transcript lines. This stays the source of truth; the text view mirrors it.
     private var lines: [String] = []
-    /// Non-nil while a full-screen program owns the alternate screen; the table shows this instead.
+    /// Non-nil while a full-screen program owns the alternate screen; the text view shows this instead.
     private var screenLines: [String]?
-    private var displayedLines: [String] { screenLines ?? lines }
+
+    /// Character length of the transcript text. Tracked as lines are appended so it stays
+    /// correct even while the alternate screen is temporarily showing something else.
+    private var transcriptLength = 0
+    /// Where the echo of the most recently submitted command starts. Command-1 lands here.
+    private var lastCommandOffset: Int?
 
     private var liveText = ""
-    /// True while the selection is at (or past) the end, so the view follows new output.
-    private var followOutput = true
 
     private var history: [String] = []
     private var historyIndex = 0
@@ -38,24 +40,42 @@ final class MainViewController: NSViewController,
 
     // MARK: - View construction
 
+    /// Builds the TextKit 1 stack by hand. A plain `NSTextView(frame:)` gets TextKit 2 on
+    /// macOS 13, and only TextKit 1 offers non-contiguous layout, which is what keeps a
+    /// 100,000-line transcript from laying itself out in full on every append.
+    private static func makeTranscriptTextView() -> NSTextView {
+        let storage = NSTextStorage()
+        let layout = NSLayoutManager()
+        layout.allowsNonContiguousLayout = true
+        storage.addLayoutManager(layout)
+
+        let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        container.widthTracksTextView = true
+        layout.addTextContainer(container)
+
+        let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 960, height: 480),
+                              textContainer: container)
+        view.minSize = NSSize(width: 0, height: 0)
+        view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                              height: CGFloat.greatestFiniteMagnitude)
+        view.isVerticallyResizable = true
+        view.isHorizontallyResizable = false
+        view.autoresizingMask = [.width]
+        return view
+    }
+
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 960, height: 640))
 
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("line"))
-        column.title = "Line"
-        column.resizingMask = .autoresizingMask
-        tableView.addTableColumn(column)
-        tableView.headerView = nil
-        tableView.allowsMultipleSelection = true
-        tableView.allowsEmptySelection = true
-        tableView.rowHeight = 22
-        tableView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
-        tableView.usesAlternatingRowBackgroundColors = true
-        tableView.dataSource = self
-        tableView.delegate = self
-        tableView.setAccessibilityLabel("Transcript")
+        textView.font = monoFont
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.usesFindBar = true
+        textView.isIncrementalSearchingEnabled = true
+        textView.setAccessibilityLabel("Transcript")
 
-        scrollView.documentView = tableView
+        scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.borderType = .bezelBorder
@@ -190,6 +210,9 @@ final class MainViewController: NSViewController,
 
     private func submitCommand() {
         let text = commandField.stringValue
+        // The shell echoes the command, so the transcript's current end is where that echo
+        // will land: the top of everything this command is about to produce.
+        lastCommandOffset = transcriptLength
         session.send(text: text + "\r")
         if !text.isEmpty {
             if history.last != text { history.append(text) }
@@ -206,60 +229,64 @@ final class MainViewController: NSViewController,
         commandField.currentEditor()?.selectedRange = NSRange(location: length, length: 0)
     }
 
-    // MARK: - Table
+    // MARK: - Transcript text
 
-    func numberOfRows(in tableView: NSTableView) -> Int {
-        displayedLines.count
+    private var textLength: Int { textView.textStorage?.length ?? 0 }
+
+    private var textAttributes: [NSAttributedString.Key: Any] {
+        [.font: monoFont, .foregroundColor: NSColor.textColor]
     }
 
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let cell: NSTextField
-        if let reused = tableView.makeView(withIdentifier: cellIdentifier, owner: nil) as? NSTextField {
-            cell = reused
-        } else {
-            cell = NSTextField(labelWithString: "")
-            cell.identifier = cellIdentifier
-            cell.font = monoFont
-            cell.lineBreakMode = .byTruncatingTail
-            cell.maximumNumberOfLines = 1
-        }
-        let text = displayedLines[row]
-        cell.stringValue = text
-        // stringValue stays exactly as the terminal drew it so copying is faithful, but the
-        // column padding in output like `ls` is dead air when spoken; collapse the runs so
-        // VoiceOver reads the columns as words.
-        if text.trimmingCharacters(in: .whitespaces).isEmpty {
-            cell.setAccessibilityLabel("blank line")
-        } else {
-            cell.setAccessibilityLabel(text.replacingOccurrences(of: " {2,}",
-                                                                 with: " ",
-                                                                 options: .regularExpression))
-        }
-        return cell
+    private func transcriptText() -> String {
+        lines.map { $0 + "\n" }.joined()
     }
 
-    func tableViewSelectionDidChange(_ notification: Notification) {
-        let last = displayedLines.count - 1
-        followOutput = tableView.selectedRowIndexes.isEmpty || tableView.selectedRow == last
+    /// Replaces the whole contents. Only used when switching between the transcript and a
+    /// full-screen program's screen, where the caret has nowhere meaningful to stay.
+    private func setText(_ text: String) {
+        guard let storage = textView.textStorage else { return }
+        storage.setAttributedString(NSAttributedString(string: text, attributes: textAttributes))
+    }
+
+    private var isCaretAtEnd: Bool {
+        let selection = textView.selectedRange()
+        return selection.location + selection.length >= textLength
+    }
+
+    /// Whether new output should scroll the view. The caret only means "where I am reading"
+    /// while the transcript has focus; the rest of the time it sits wherever it was last put
+    /// (0 at launch), so keying the scroll purely off it would stop the view following the
+    /// output after the very first line.
+    private var shouldFollowOutput: Bool {
+        view.window?.firstResponder !== textView || isCaretAtEnd
+    }
+
+    private func moveCaret(to offset: Int) {
+        let range = NSRange(location: max(0, min(offset, textLength)), length: 0)
+        textView.setSelectedRange(range)
+        textView.scrollRangeToVisible(range)
     }
 
     private func appendLines(_ newLines: [String]) {
         guard !newLines.isEmpty else { return }
-        let start = lines.count
         lines.append(contentsOf: newLines)
-        guard screenLines == nil else { return }
-        tableView.insertRows(at: IndexSet(integersIn: start..<lines.count), withAnimation: [])
-        if followOutput {
-            tableView.scrollRowToVisible(lines.count - 1)
-        }
-    }
+        let chunk = newLines.map { $0 + "\n" }.joined()
+        transcriptLength += (chunk as NSString).length
+        guard screenLines == nil, let storage = textView.textStorage else { return }
 
-    private func selectLastRow() {
-        let last = displayedLines.count - 1
-        guard last >= 0 else { return }
-        tableView.selectRowIndexes(IndexSet(integer: last), byExtendingSelection: false)
-        tableView.scrollRowToVisible(last)
-        followOutput = true
+        // If the user has moved the caret back to read something, new output must not drag
+        // the view away from them.
+        let follow = shouldFollowOutput
+        let selection = textView.selectedRanges
+        storage.append(NSAttributedString(string: chunk, attributes: textAttributes))
+        // Appending past the caret should leave it alone, but restore it explicitly rather
+        // than relying on that: the caret is the reading position.
+        textView.setSelectedRanges(selection,
+                                   affinity: textView.selectionAffinity,
+                                   stillSelecting: false)
+        if follow {
+            textView.scrollRangeToVisible(NSRange(location: textLength, length: 0))
+        }
     }
 
     // MARK: - TerminalSessionDelegate
@@ -268,7 +295,7 @@ final class MainViewController: NSViewController,
         if let screen = update.alternateScreen {
             let previous = screenLines
             screenLines = screen
-            tableView.reloadData()
+            setText(screen.map { $0 + "\n" }.joined())
             if previous == nil {
                 liveLabel.stringValue = "Full-screen program running. The transcript shows its screen."
                 announcer.announceNow("Full-screen program started")
@@ -286,8 +313,8 @@ final class MainViewController: NSViewController,
 
         if screenLines != nil {
             screenLines = nil
-            tableView.reloadData()
-            selectLastRow()
+            setText(transcriptText())
+            moveCaret(to: textLength)
             announcer.announceNow("Returned to transcript")
         }
 
@@ -321,8 +348,9 @@ final class MainViewController: NSViewController,
     // MARK: - Menu actions
 
     @objc func focusTranscript(_ sender: Any?) {
-        if tableView.selectedRow < 0 { selectLastRow() }
-        view.window?.makeFirstResponder(tableView)
+        view.window?.makeFirstResponder(textView)
+        // The start of the last command's echo, or the end if nothing has been run yet.
+        moveCaret(to: lastCommandOffset ?? textLength)
     }
 
     @objc func focusCommandLine(_ sender: Any?) {
@@ -330,8 +358,8 @@ final class MainViewController: NSViewController,
     }
 
     @objc func goToEnd(_ sender: Any?) {
-        selectLastRow()
-        view.window?.makeFirstResponder(tableView)
+        view.window?.makeFirstResponder(textView)
+        moveCaret(to: textLength)
     }
 
     @objc func readCurrentLine(_ sender: Any?) {
@@ -356,15 +384,7 @@ final class MainViewController: NSViewController,
     }
 
     @objc func copyAll(_ sender: Any?) {
-        copyToPasteboard(displayedLines.joined(separator: "\n"), announce: "Copied entire transcript")
-    }
-
-    /// Reached through the responder chain when the transcript table has focus.
-    @objc func copy(_ sender: Any?) {
-        let rows = tableView.selectedRowIndexes
-        guard !rows.isEmpty else { return }
-        let text = rows.map { displayedLines[$0] }.joined(separator: "\n")
-        copyToPasteboard(text, announce: rows.count == 1 ? "Copied line" : "Copied \(rows.count) lines")
+        copyToPasteboard(lines.joined(separator: "\n"), announce: "Copied entire transcript")
     }
 
     private func copyToPasteboard(_ text: String, announce: String) {
@@ -377,9 +397,6 @@ final class MainViewController: NSViewController,
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleSpeakOutput(_:)) {
             menuItem.state = announcer.enabled ? .on : .off
-        }
-        if menuItem.action == #selector(copy(_:)) {
-            return !tableView.selectedRowIndexes.isEmpty
         }
         return true
     }

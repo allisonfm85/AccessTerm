@@ -23,8 +23,10 @@ The first build downloads the SwiftTerm package, so it needs network access once
 
 Top to bottom:
 
-1. **Transcript** (a table, labeled "Transcript"). One row per logical line. Long lines that
-   wrapped in the terminal are joined back into a single row.
+1. **Transcript** (a read-only text view, labeled "Transcript"). One line per logical line.
+   Long lines that wrapped in the terminal are joined back into a single line. Because it is
+   an ordinary text view, VoiceOver navigates it with the caret and reads by line, word, or
+   character; text is only ever appended, so the reading position never moves under you.
 2. **Current line** (labeled "Current line"). Whatever the program has not finished printing:
    normally the shell prompt, a partially printed line, or a progress line.
 3. **Command line** (labeled "Command line"). A normal text field. Return sends the line.
@@ -35,7 +37,7 @@ Global (Command shortcuts, so they never collide with VoiceOver's Control-Option
 
 | Key | Action |
 | --- | --- |
-| Command-1 | Focus the transcript (selects the last line if nothing is selected) |
+| Command-1 | Focus the transcript, caret at the last command you ran |
 | Command-2 | Focus the command line |
 | Command-Shift-E | Go to the end of the transcript |
 | Command-Shift-L | Speak the current line |
@@ -46,9 +48,15 @@ Global (Command shortcuts, so they never collide with VoiceOver's Control-Option
 In the transcript:
 
 - Up/Down arrow: move one line, VoiceOver reads it. No interaction needed.
-- Shift-Up/Down: extend the selection. Command-A selects all.
-- Command-C: copy the selected lines.
-- Moving the selection off the last line freezes auto-scroll; Command-Shift-E resumes it.
+- Left/Right arrow: move one character. Option-Left/Right: move one word.
+- Shift with any of those: extend the selection. Command-A selects all.
+- Command-C: copy the selection. Command-Shift-C copies the whole transcript.
+- Command-F: find. (Needs a Find item in the Edit menu, which is not there yet.)
+- Command-1 puts the caret at the start of the echo of the last command you sent, which is
+  the top of that command's output. Before you have run anything it goes to the end.
+- Command-Shift-E puts the caret at the end.
+- New output only scrolls the view when the caret is already at the end, so moving back to
+  read something holds your place; Command-Shift-E returns to following the output.
 
 In the command line:
 
