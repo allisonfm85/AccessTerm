@@ -73,6 +73,10 @@ Terminal menu also has "Send Escape" and "Send Shift-Tab" for when you'd rather 
 
 - New output lines are batched every quarter second and spoken as one announcement.
   Bursts over 30 lines are summarised ("N lines of output. Last 30: ...").
+- Moving the caret in the transcript speaks what it moved over: the line, when it changed
+  lines, otherwise the word or character stepped across. Extending the selection speaks the
+  text that came into it followed by "selected", and shrinking it speaks the text that left
+  followed by "unselected"; a move that flips the anchor says both.
 - A terminal bell speaks "Attention" plus the current line at high priority. Claude Code's
   screen reader mode rings the bell when it wants input, so this is how you know it's your turn.
 - Full-screen programs (vim, htop, an attached Claude session) switch the transcript to a
