@@ -248,9 +248,28 @@ final class MainViewController: NSViewController,
         storage.setAttributedString(NSAttributedString(string: text, attributes: textAttributes))
     }
 
+    /// Offset of the start of the last line that has any content. The transcript ends with a
+    /// newline, so the very end of the text is an empty line past it, and a caret parked there
+    /// leaves VoiceOver nothing to read.
+    private var lastLineStart: Int {
+        guard let text = textView.textStorage?.mutableString, text.length > 0 else { return 0 }
+        var location = text.length
+        while location > 0 {
+            let line = text.paragraphRange(for: NSRange(location: location - 1, length: 0))
+            let content = text.substring(with: line)
+            if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return line.location
+            }
+            location = line.location
+        }
+        return 0
+    }
+
+    /// Anywhere on the last line counts as being at the end: that is where Command-Shift-E
+    /// lands, and someone who has arrowed back down to the bottom is following output again.
     private var isCaretAtEnd: Bool {
         let selection = textView.selectedRange()
-        return selection.location + selection.length >= textLength
+        return selection.location + selection.length >= lastLineStart
     }
 
     /// Whether new output should scroll the view. The caret only means "where I am reading"
@@ -366,7 +385,9 @@ final class MainViewController: NSViewController,
     }
 
     @objc func goToEnd(_ sender: Any?) {
-        landCaret(at: textLength)
+        // The start of the last line with content, not the empty line past the final newline:
+        // the caret has to be on a line for VoiceOver to have anything to read.
+        landCaret(at: lastLineStart)
     }
 
     @objc func readCurrentLine(_ sender: Any?) {

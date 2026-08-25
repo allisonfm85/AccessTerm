@@ -54,7 +54,7 @@ In the transcript:
 - Command-F: find (Edit > Find). Return and Shift-Return step through the matches.
 - Command-1 puts the caret at the start of the echo of the last command you sent, which is
   the top of that command's output. Before you have run anything it goes to the end.
-- Command-Shift-E puts the caret at the end.
+- Command-Shift-E puts the caret on the last line, so VoiceOver reads it.
 - New output only scrolls the view when the caret is already at the end, so moving back to
   read something holds your place; Command-Shift-E returns to following the output.
 
