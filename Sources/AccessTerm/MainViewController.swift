@@ -53,8 +53,8 @@ final class MainViewController: NSViewController,
         container.widthTracksTextView = true
         layout.addTextContainer(container)
 
-        let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 960, height: 480),
-                              textContainer: container)
+        let view = TranscriptTextView(frame: NSRect(x: 0, y: 0, width: 960, height: 480),
+                                      textContainer: container)
         view.minSize = NSSize(width: 0, height: 0)
         view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
                               height: CGFloat.greatestFiniteMagnitude)
@@ -406,5 +406,27 @@ final class MainViewController: NSViewController,
             menuItem.state = announcer.enabled ? .on : .off
         }
         return true
+    }
+}
+
+/// A text view that reports only the caret's line as its accessibility value.
+///
+/// VoiceOver reads a text area's value when it takes focus, and the value of a plain
+/// NSTextView is its entire contents -- unusable once the transcript is thousands of lines
+/// long. Every other accessibility method is left at its default, so line, word and character
+/// navigation, selection, and string-for-range still work across the whole text.
+final class TranscriptTextView: NSTextView {
+    // NSTextView narrows the accessibility protocol's Any? to String?.
+    override func accessibilityValue() -> String? {
+        // mutableString is the storage's own backing string, so this reads the caret's line
+        // without copying the transcript. It is only ever read here, never mutated.
+        guard let text = textStorage?.mutableString, text.length > 0 else { return "" }
+        let location = min(selectedRange().location, text.length)
+        var line = text.paragraphRange(for: NSRange(location: location, length: 0))
+        // paragraphRange includes the newline that ends the line; VoiceOver should not.
+        if line.length > 0, text.character(at: line.location + line.length - 1) == 0x0a {
+            line.length -= 1
+        }
+        return text.substring(with: line)
     }
 }
