@@ -65,6 +65,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editMenu.addItem(.separator())
+        // The transcript text view has a find bar, but Command-F only reaches it through a
+        // main menu key equivalent, and the action is dispatched by tag.
+        let find = editMenu.addItem(withTitle: "Find\u{2026}",
+                                    action: #selector(NSTextView.performTextFinderAction(_:)),
+                                    keyEquivalent: "f")
+        find.tag = Int(NSTextFinder.Action.showFindInterface.rawValue)
+        editMenu.addItem(.separator())
         let copyAll = editMenu.addItem(withTitle: "Copy Entire Transcript",
                                        action: #selector(MainViewController.copyAll(_:)),
                                        keyEquivalent: "c")

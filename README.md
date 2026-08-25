@@ -51,7 +51,7 @@ In the transcript:
 - Left/Right arrow: move one character. Option-Left/Right: move one word.
 - Shift with any of those: extend the selection. Command-A selects all.
 - Command-C: copy the selection. Command-Shift-C copies the whole transcript.
-- Command-F: find. (Needs a Find item in the Edit menu, which is not there yet.)
+- Command-F: find (Edit > Find). Return and Shift-Return step through the matches.
 - Command-1 puts the caret at the start of the echo of the last command you sent, which is
   the top of that command's output. Before you have run anything it goes to the end.
 - Command-Shift-E puts the caret at the end.
