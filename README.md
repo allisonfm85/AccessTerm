@@ -1,4 +1,4 @@
-# AccessTerm (milestone 1)
+# AccessTerm (milestone 2)
 
 A macOS terminal built for VoiceOver. Instead of one big text area that VoiceOver has to
 interact with, output is presented as an append-only list of logical lines, with a separate
@@ -44,6 +44,9 @@ Global (Command shortcuts, so they never collide with VoiceOver's Control-Option
 | Command-Shift-S | Toggle speaking of new output on and off |
 | Command-. | Send Control-C (interrupt) |
 | Command-Shift-C | Copy the entire transcript |
+| Option-Command-Up | Previous command |
+| Option-Command-Down | Next command |
+| Command-Shift-O | Copy the output of the command the caret is in |
 
 In the transcript:
 
@@ -52,8 +55,14 @@ In the transcript:
 - Shift with any of those: extend the selection. Command-A selects all.
 - Command-C: copy the selection. Command-Shift-C copies the whole transcript.
 - Command-F: find (Edit > Find). Return and Shift-Return step through the matches.
-- Command-1 puts the caret at the start of the echo of the last command you sent, which is
+- Command-1 puts the caret on the last command you ran, at the start of its line, which is
   the top of that command's output. Before you have run anything it goes to the end.
+- Option-Command-Up and Option-Command-Down step between commands, landing on the command
+  line each time and speaking the command, plus its exit code if it failed: "ls -la, exit
+  code 1". From inside a command's output, Option-Command-Up goes to the top of that command
+  first, then to the one before it.
+- Command-Shift-O copies the output of the command the caret is in, without the prompt or the
+  command line.
 - Command-Shift-E puts the caret on the last line, so VoiceOver reads it.
 - New output only scrolls the view when the caret is already at the end, so moving back to
   read something holds your place; Command-Shift-E returns to following the output.
@@ -69,6 +78,28 @@ In the command line:
 
 Terminal menu also has "Send Escape" and "Send Shift-Tab" for when you'd rather use the menu.
 
+## Command blocks
+
+The transcript is divided into blocks: one prompt, one command, its output, and how it ended.
+That is what Option-Command-Up and Option-Command-Down move between, what Command-Shift-O
+copies the output of, and what Command-1 lands on.
+
+The boundaries come from OSC 133, the escape sequences a shell prints to say "prompt starts
+here", "the command starts here", "it is running now" and "it finished with this exit code".
+Nothing needs to be added to your dotfiles: zsh reads its startup files from `$ZDOTDIR`, so
+the app writes a directory of its own to `~/Library/Application Support/AccessTerm/zsh` and
+launches the shell pointed at it. The files there source your own `.zshenv`, `.zprofile`,
+`.zshrc` and `.zlogin` first, put `ZDOTDIR` back to yours afterwards, and then add `precmd`
+and `preexec` hooks that print the markers. They are rewritten on every launch, so editing
+them is pointless -- edit your own dotfiles, which they run.
+
+Claude Code's screen reader mode prints the same markers itself, so a Claude session inside
+the terminal is divided into blocks whether or not the shell is cooperating.
+
+If no markers ever arrive -- another shell, a `$ZDOTDIR` you have locked down -- the whole
+transcript is treated as one block. The commands above still work; there is just one thing
+for them to work on.
+
 ## What is announced
 
 - New output lines are batched every quarter second and spoken as one announcement.
@@ -79,6 +110,8 @@ Terminal menu also has "Send Escape" and "Send Shift-Tab" for when you'd rather 
 - When the app moves the caret for you (Command-1, Command-Shift-E), the landing line is
   announced at high priority once focus has landed. See "Known issues" for what VoiceOver
   says before it.
+- A command that ends with a non-zero exit code adds "exit code 127" to the end of the
+  announcement of whatever it printed.
 - A terminal bell speaks "Attention" plus the current line at high priority. Claude Code's
   screen reader mode rings the bell when it wants input, so this is how you know it's your turn.
 - Full-screen programs (vim, htop, an attached Claude session) switch the transcript to a
@@ -91,6 +124,9 @@ The shell is launched with these environment variables so the tools you care abo
 - `CLAUDE_AX_SCREEN_READER=1` — Claude Code's screen reader mode (v2.1.181 or later).
 - `GH_ACCESSIBLE_PROMPTER=1`, `GH_ACCESSIBLE_COLORS=1`, `GH_SPINNER_DISABLED=1` — GitHub CLI.
 - `TERM_PROGRAM=AccessTerm` so other tools can detect the app.
+- `ZDOTDIR` points at the app's own zsh startup files, which source yours. See "Command
+  blocks". Your original value is kept in `ACCESSTERM_USER_ZDOTDIR` and restored before your
+  `.zshrc` finishes, so anything you launch sees the value you set.
 
 ## Known limitations in this milestone
 
@@ -98,7 +134,6 @@ The shell is launched with these environment variables so the tools you care abo
 - Shell tab completion and the shell's own history editing don't work from the native
   command field. A "direct input" mode that passes every keystroke through is planned.
 - After 100,000 lines of scrollback the transcript stops growing. Restart the app for now.
-- No OSC 133 command blocks yet (milestone 2), so "jump to previous command" isn't in yet.
 
 ## Known issues
 
@@ -126,6 +161,6 @@ to an ordinary text area, which is what VoiceOver navigates best.
 ## Milestones
 
 1. This: PTY, headless VT engine, accessible transcript, command field, announcements.
-2. Shell integration (OSC 133): command/output blocks, jump between commands, copy output only,
-   custom VoiceOver rotors for commands, errors, and Claude turns.
+2. This: shell integration (OSC 133): command/output blocks, jump between commands, copy
+   output only. Custom VoiceOver rotors for commands, errors and Claude turns are not in yet.
 3. Better full-screen program support and a direct-input mode.

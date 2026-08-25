@@ -12,7 +12,7 @@ final class MainViewController: NSViewController,
                                 NSMenuItemValidation {
 
     let session = TerminalSession()
-    private let announcer = Announcer()
+    let announcer = Announcer()
 
     private let textView = MainViewController.makeTranscriptTextView()
     private let scrollView = NSScrollView()
@@ -23,6 +23,9 @@ final class MainViewController: NSViewController,
 
     /// Committed transcript lines. This stays the source of truth; the text view mirrors it.
     private var lines: [String] = []
+    /// Character offset of the start of each line, so a block's line numbers can be turned
+    /// into somewhere to put the caret without measuring the transcript again each time.
+    private var lineOffsets: [Int] = []
     /// Non-nil while a full-screen program owns the alternate screen; the text view shows this instead.
     private var screenLines: [String]?
 
@@ -125,7 +128,8 @@ final class MainViewController: NSViewController,
     override func viewDidLoad() {
         super.viewDidLoad()
         session.delegate = self
-        appendLines(["AccessTerm ready. Shell: /bin/zsh. Command-1 transcript, Command-2 command line."])
+        appendLines(["AccessTerm ready. Shell: /bin/zsh. Command-1 transcript, Command-2 command line."],
+                    fromSession: false)
         session.start()
     }
 
@@ -298,23 +302,115 @@ final class MainViewController: NSViewController,
     /// The announcement is what the user actually hears the landing line from. See "Known
     /// issues" in the README: VoiceOver reads the first line of the transcript as focus
     /// arrives, whatever the caret is doing, and nothing tried so far has stopped it.
-    private func landCaret(at offset: Int) {
+    private func landCaret(at offset: Int, announcing: String? = nil) {
         moveCaret(to: offset)
         view.window?.makeFirstResponder(textView)
         NSAccessibility.post(element: textView, notification: .selectedTextChanged)
 
-        let line = textView.caretLineText
-        guard !line.isEmpty else { return }
+        let spoken = announcing ?? textView.caretLineText
+        guard !spoken.isEmpty else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            self?.announcer.announceNow(line, priority: .high)
+            self?.announcer.announceNow(spoken, priority: .high)
         }
     }
 
-    private func appendLines(_ newLines: [String]) {
+    // MARK: - Command blocks
+
+    /// Transcript line the caret is on.
+    private var caretLine: Int {
+        let offset = textView.selectedRange().location
+        guard !lineOffsets.isEmpty else { return 0 }
+        var low = 0
+        var high = lineOffsets.count - 1
+        while low < high {
+            let middle = (low + high + 1) / 2
+            if lineOffsets[middle] <= offset { low = middle } else { high = middle - 1 }
+        }
+        return low
+    }
+
+    private func offset(ofLine line: Int) -> Int {
+        guard !lineOffsets.isEmpty else { return 0 }
+        return lineOffsets[max(0, min(line, lineOffsets.count - 1))]
+    }
+
+    /// Blocks worth navigating to: ones with a command in them. A block the shell opened for
+    /// the prompt currently waiting for input is not somewhere to land.
+    private var commandBlocks: [CommandBlock] {
+        session.commandBlocks.filter { !$0.command.isEmpty }
+    }
+
+    /// Index of the block the caret is in, or the last one starting before it.
+    private func blockIndex(containing line: Int, in blocks: [CommandBlock]) -> Int? {
+        blocks.lastIndex { $0.allLines.lowerBound <= line }
+    }
+
+    /// "ls -la" on its own, or "ls -la, exit code 1" when it failed.
+    private func announcement(for block: CommandBlock) -> String {
+        block.failed ? "\(block.command), exit code \(block.exitCode ?? 0)" : block.command
+    }
+
+    @objc func previousCommand(_ sender: Any?) { stepCommand(-1) }
+    @objc func nextCommand(_ sender: Any?) { stepCommand(1) }
+
+    private func stepCommand(_ delta: Int) {
+        guard screenLines == nil else {
+            announcer.announceNow("Not available while a full-screen program is running")
+            return
+        }
+        let blocks = commandBlocks
+        guard !blocks.isEmpty else {
+            announcer.announceNow("No commands to move between")
+            return
+        }
+        let line = caretLine
+        let current = blockIndex(containing: line, in: blocks)
+
+        var target = (current ?? (delta < 0 ? blocks.count : -1)) + delta
+        // Going back from inside a block's output means the top of that block, not the one
+        // before it: the same as scrolling back to the command you are reading the output of.
+        if delta < 0, let current, line > blocks[current].commandLine { target = current }
+
+        guard blocks.indices.contains(target) else {
+            announcer.announceNow(delta < 0 ? "No previous command" : "No next command")
+            return
+        }
+        let block = blocks[target]
+        landCaret(at: offset(ofLine: block.commandLine), announcing: announcement(for: block))
+    }
+
+    @objc func copyBlockOutput(_ sender: Any?) {
+        guard screenLines == nil else {
+            announcer.announceNow("Not available while a full-screen program is running")
+            return
+        }
+        let blocks = session.commandBlocks
+        guard let index = blockIndex(containing: caretLine, in: blocks) ?? blocks.indices.last else {
+            announcer.announceNow("No output to copy")
+            return
+        }
+        let output = blocks[index].outputLines.clamped(to: lines.indices)
+        guard !output.isEmpty else {
+            announcer.announceNow("No output to copy")
+            return
+        }
+        let text = output.map { lines[$0] }.joined(separator: "\n") + "\n"
+        copyToPasteboard(text, announce: "Copied output, \(output.count) "
+                         + (output.count == 1 ? "line" : "lines"))
+    }
+
+    /// `fromSession` is false for lines the app writes itself -- the ready message, the exit
+    /// message. Command blocks are numbered in transcript lines, so the session counts those
+    /// too or every block after one of them points a line too high.
+    private func appendLines(_ newLines: [String], fromSession: Bool = true) {
         guard !newLines.isEmpty else { return }
+        if !fromSession { session.noteExternalTranscriptLines(newLines.count) }
+        for line in newLines {
+            lineOffsets.append(transcriptLength)
+            transcriptLength += (line as NSString).length + 1
+        }
         lines.append(contentsOf: newLines)
         let chunk = newLines.map { $0 + "\n" }.joined()
-        transcriptLength += (chunk as NSString).length
         guard screenLines == nil, let storage = textView.textStorage else { return }
         // If the user has moved the caret back to read something, new output must not drag
         // the view away from them.
@@ -363,7 +459,11 @@ final class MainViewController: NSViewController,
         }
 
         appendLines(update.newLines)
-        announcer.enqueue(update.newLines)
+        // A command that failed says so on the end of whatever it printed.
+        let failures = update.finishedCommands
+            .filter { $0.failed }
+            .map { "exit code \($0.exitCode ?? 0)" }
+        announcer.enqueue(update.newLines + failures)
 
         if update.liveText != liveText {
             liveText = update.liveText
@@ -383,7 +483,7 @@ final class MainViewController: NSViewController,
 
     func session(_ session: TerminalSession, didTerminateWithExitCode code: Int32?) {
         let message = "[Shell exited" + (code.map { " with code \($0)" } ?? "") + "]"
-        appendLines([message])
+        appendLines([message], fromSession: false)
         liveLabel.stringValue = message
         commandField.isEnabled = false
         announcer.announceNow(message)
@@ -392,9 +492,14 @@ final class MainViewController: NSViewController,
     // MARK: - Menu actions
 
     @objc func focusTranscript(_ sender: Any?) {
-        // The start of the last command's echo, or the last line with content if nothing has
-        // been run yet -- not textLength, which is the empty line past the final newline and
-        // would put the caret on a line with nothing to read.
+        // The most recent command's own line, from the block model. Without markers there is
+        // no model, so fall back to the offset noted when the command was sent, and to the
+        // last line with content before anything has been run -- not textLength, which is the
+        // empty line past the final newline and has nothing to read.
+        if screenLines == nil, session.hasCommandMarkers, let block = commandBlocks.last {
+            landCaret(at: offset(ofLine: block.commandLine))
+            return
+        }
         landCaret(at: lastCommandOffset ?? lastLineStart)
     }
 

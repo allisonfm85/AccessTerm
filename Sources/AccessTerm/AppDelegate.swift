@@ -95,6 +95,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toEnd.keyEquivalentModifierMask = [.command, .shift]
         termMenu.addItem(.separator())
 
+        // Command blocks. Arrow keys as key equivalents are the function-key code points.
+        let previous = termMenu.addItem(withTitle: "Previous Command",
+                                        action: #selector(MainViewController.previousCommand(_:)),
+                                        keyEquivalent: "\u{F700}")
+        previous.keyEquivalentModifierMask = [.command, .option]
+        let next = termMenu.addItem(withTitle: "Next Command",
+                                    action: #selector(MainViewController.nextCommand(_:)),
+                                    keyEquivalent: "\u{F701}")
+        next.keyEquivalentModifierMask = [.command, .option]
+        let copyOutput = termMenu.addItem(withTitle: "Copy Output of This Command",
+                                          action: #selector(MainViewController.copyBlockOutput(_:)),
+                                          keyEquivalent: "o")
+        copyOutput.keyEquivalentModifierMask = [.command, .shift]
+        termMenu.addItem(.separator())
+
         let readLine = termMenu.addItem(withTitle: "Read Current Line",
                                         action: #selector(MainViewController.readCurrentLine(_:)),
                                         keyEquivalent: "l")

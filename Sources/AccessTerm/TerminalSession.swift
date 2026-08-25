@@ -11,6 +11,31 @@ struct TerminalUpdate {
     var liveText: String
     /// Non-nil while a full-screen program (vim, htop, an attached session) owns the alternate screen.
     var alternateScreen: [String]?
+    /// Commands that finished while this batch was being read, for announcing alongside it.
+    var finishedCommands: [CommandBlock] = []
+}
+
+/// One command, its output and how it ended, as marked by OSC 133. Everything is in
+/// transcript lines, so the UI can work in the units it already has.
+struct CommandBlock {
+    /// The prompt, ending with the line the command was typed on.
+    var promptLines: Range<Int>
+    /// What was typed, read back off the command line between the B and C markers.
+    var command: String
+    /// The output on its own: no prompt, no command line.
+    var outputLines: Range<Int>
+    /// Nil until the command finishes, and after that nil only if the shell reported no code.
+    var exitCode: Int32?
+    /// Whether the closing marker has arrived. A command still running is not finished.
+    var isFinished: Bool
+
+    /// The line the command is on, which is the last line of the prompt.
+    var commandLine: Int { max(promptLines.lowerBound, promptLines.upperBound - 1) }
+    /// Prompt, command and output together: what "the block the caret is in" means.
+    var allLines: Range<Int> {
+        min(promptLines.lowerBound, outputLines.lowerBound)..<max(promptLines.upperBound, outputLines.upperBound)
+    }
+    var failed: Bool { (exitCode ?? 0) != 0 }
 }
 
 protocol TerminalSessionDelegate: AnyObject {
@@ -34,6 +59,19 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
 
     /// Scroll-invariant buffer row index up to which lines have been committed.
     private var committedRows = 0
+    /// Transcript lines committed so far, counting lines the app added itself: block line
+    /// numbers are transcript line numbers, so anything the transcript holds has to be counted
+    /// here or every block after it points a line too high. See noteExternalTranscriptLines.
+    private var committedLines = 0
+
+    /// Command blocks as the markers describe them, oldest first.
+    private var rawBlocks: [RawBlock] = []
+    /// Marker positions waiting for their buffer row to be committed, so the row can be turned
+    /// into a transcript line. A marker lands on the row the cursor is on, which is always at
+    /// or past the commit point, so anchors only ever resolve forwards.
+    private var pendingAnchors: [Int: [(block: Int, anchor: Anchor)]] = [:]
+    /// Blocks that finished since the last update went out.
+    private var justFinished: [Int] = []
     private var wasAlternate = false
     private var updateScheduled = false
     private(set) var isRunning = false
@@ -50,6 +88,12 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         // terminal at the default size and resize up to the one we actually want.
         terminal = Terminal(delegate: self, options: TerminalOptions(scrollback: 100_000))
         terminal.resize(cols: cols, rows: rows)
+        // Command blocks. A registered handler takes precedence over SwiftTerm's own OSC 133
+        // handling, which tracks semantic prompt marks per row -- of no use here, because the
+        // transcript is addressed by logical line rather than by buffer row.
+        terminal.registerOscHandler(code: 133) { [weak self] data in
+            self?.handleCommandMarker(data)
+        }
         process = LocalProcess(delegate: self, dispatchQueue: .main)
     }
 
@@ -70,6 +114,16 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         env["GH_ACCESSIBLE_PROMPTER"] = "1"    // GitHub CLI: numbered prompts instead of arrow menus
         env["GH_ACCESSIBLE_COLORS"] = "1"
         env["GH_SPINNER_DISABLED"] = "1"
+
+        // Command blocks: zsh reads its startup files from ZDOTDIR, so point it at one of
+        // ours, which sources theirs and adds the markers. Their own ZDOTDIR has to be handed
+        // over separately -- it is about to be overwritten, and the files there need it to
+        // find the dotfiles they are standing in for.
+        if let zdotdir = ShellIntegration.prepareZDotDir() {
+            env["ACCESSTERM_USER_ZDOTDIR"] = env["ZDOTDIR"] ?? NSHomeDirectory()
+            env["ACCESSTERM_ZDOTDIR"] = zdotdir.path
+            env["ZDOTDIR"] = zdotdir.path
+        }
 
         let envArray = env.map { "\($0.key)=\($0.value)" }
         isRunning = true
@@ -130,6 +184,149 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         return size
     }
 
+    // MARK: - Command blocks
+
+    /// Which part of a block a marker fixes in place.
+    private enum Anchor { case prompt, command, outputStart, outputEnd }
+
+    /// A block as the markers describe it. Buffer rows arrive first and become transcript
+    /// lines as those rows are committed; the two are kept apart because a marker's row is
+    /// usually still on screen and uncommitted when it arrives. D in particular lands on the
+    /// row the next prompt will be drawn on, which is not committed until the command after
+    /// that one runs.
+    private struct RawBlock {
+        /// Column the command starts at, which is where the prompt ended.
+        var commandColumn = 0
+        var exitCode: Int32?
+        var isFinished = false
+        /// Whether the command ever started running. A prompt sitting waiting for input has
+        /// not, and is not a block worth showing anyone.
+        var didRun = false
+
+        var promptLine: Int?
+        var commandLine: Int?
+        var outputStart: Int?
+        var outputEnd: Int?
+        var command = ""
+    }
+
+    /// The commands seen so far, oldest first.
+    var commandBlocks: [CommandBlock] {
+        guard hasCommandMarkers else {
+            // Nothing is marking commands -- an older shell, or a user who has ZDOTDIR locked
+            // down. The whole transcript is one block, so everything that works on "the block
+            // the caret is in" still has something to work on.
+            return [CommandBlock(promptLines: 0..<0, command: "",
+                                 outputLines: 0..<committedLines, exitCode: nil, isFinished: false)]
+        }
+        return rawBlocks.compactMap(published)
+    }
+
+    /// Whether the shell is reporting command boundaries at all.
+    var hasCommandMarkers: Bool { !rawBlocks.isEmpty }
+
+    /// A block in transcript terms. Anything a marker has not pinned down yet reads as "up to
+    /// where the transcript currently ends", which is what an unfinished command's output is.
+    private func published(_ block: RawBlock) -> CommandBlock? {
+        guard block.didRun || block.isFinished || !block.command.isEmpty else { return nil }
+        let prompt = block.promptLine ?? block.commandLine ?? committedLines
+        let command = max(prompt, block.commandLine ?? prompt)
+        let outputStart = max(command + 1, block.outputStart ?? committedLines)
+        let outputEnd = max(outputStart, block.outputEnd ?? committedLines)
+        return CommandBlock(promptLines: prompt..<(command + 1),
+                            command: block.command,
+                            outputLines: outputStart..<outputEnd,
+                            exitCode: block.exitCode,
+                            isFinished: block.isFinished)
+    }
+
+    /// Lines the app put in the transcript itself, rather than the shell: the ready message at
+    /// launch, the exit message at the end. Blocks are numbered in transcript lines, so these
+    /// have to be counted too.
+    func noteExternalTranscriptLines(_ count: Int) {
+        committedLines += count
+    }
+
+    /// Where a marker arriving now would land, in the same scroll-invariant rows the
+    /// transcript is committed in.
+    private var cursorRow: Int {
+        terminal.buffer.totalLinesTrimmed + terminal.getTopVisibleRow() + terminal.buffer.y
+    }
+
+    /// OSC 133: A before the prompt, B where the command is typed, C when it starts running,
+    /// D with the exit code when it finishes. Called from inside the parser, so the cursor is
+    /// wherever the marker appeared.
+    private func handleCommandMarker(_ data: ArraySlice<UInt8>) {
+        guard !terminal.isCurrentBufferAlternate,
+              let payload = String(bytes: data, encoding: .utf8) else { return }
+        let fields = payload.split(separator: ";", omittingEmptySubsequences: false)
+        guard let kind = fields.first?.first else { return }
+        let row = cursorRow
+
+        switch kind {
+        case "A", "N":
+            rawBlocks.append(RawBlock())
+            anchor(.prompt, row: row)
+        case "B":
+            openBlock()
+            rawBlocks[rawBlocks.count - 1].commandColumn = terminal.buffer.x
+            anchor(.command, row: row)
+        case "C":
+            openBlock()
+            rawBlocks[rawBlocks.count - 1].didRun = true
+            anchor(.outputStart, row: row)
+        case "D":
+            openBlock()
+            let index = rawBlocks.count - 1
+            rawBlocks[index].isFinished = true
+            if fields.count > 1 { rawBlocks[index].exitCode = Int32(fields[1]) }
+            anchor(.outputEnd, row: row)
+            justFinished.append(index)
+        default:
+            break
+        }
+    }
+
+    /// Markers can start anywhere: Claude Code emits C and D around its own turns without
+    /// having drawn a prompt, and a session attached mid-command has missed A entirely.
+    private func openBlock() {
+        if rawBlocks.isEmpty || rawBlocks[rawBlocks.count - 1].isFinished {
+            rawBlocks.append(RawBlock())
+        }
+    }
+
+    private func anchor(_ anchor: Anchor, row: Int) {
+        pendingAnchors[row, default: []].append((block: rawBlocks.count - 1, anchor: anchor))
+    }
+
+    /// Turns the markers waiting on this row into transcript lines.
+    private func resolveAnchors(row: Int, line: Int) {
+        guard let waiting = pendingAnchors.removeValue(forKey: row) else { return }
+        for (block, anchor) in waiting where block < rawBlocks.count {
+            switch anchor {
+            case .prompt: rawBlocks[block].promptLine = line
+            case .command: rawBlocks[block].commandLine = line
+            case .outputStart: rawBlocks[block].outputStart = line
+            case .outputEnd: rawBlocks[block].outputEnd = line
+            }
+        }
+    }
+
+    /// Reads command text off the lines just committed. It has to happen after the whole
+    /// batch, not as each row lands: a wrapped command line is not complete until the last
+    /// row of the group has been joined onto it.
+    private func readCommands(from newLines: [String], firstLine: Int) {
+        guard !newLines.isEmpty else { return }
+        let committed = firstLine..<(firstLine + newLines.count)
+        for index in rawBlocks.indices where rawBlocks[index].command.isEmpty {
+            guard let line = rawBlocks[index].commandLine, committed.contains(line) else { continue }
+            let text = Array(newLines[line - firstLine])
+            let column = min(rawBlocks[index].commandColumn, text.count)
+            rawBlocks[index].command = String(text[column...])
+                .trimmingCharacters(in: .whitespaces)
+        }
+    }
+
     // MARK: - Transcript assembly
 
     /// Output arrives in many small chunks; coalesce so we commit whole lines, not fragments.
@@ -164,8 +361,13 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         let screenTop = buffer.totalLinesTrimmed + terminal.getTopVisibleRow()
         let absCursor = screenTop + buffer.y
 
-        // Scrollback was cleared (e.g. `clear`, Control-L with ESC[3J): resync.
-        if absCursor < committedRows { committedRows = absCursor }
+        // Scrollback was cleared (e.g. `clear`, Control-L with ESC[3J): resync. Rows have
+        // been renumbered under the markers still waiting on one, so those are dropped; their
+        // blocks fall back to reading as "up to the end of the transcript".
+        if absCursor < committedRows {
+            committedRows = absCursor
+            pendingAnchors.removeAll()
+        }
         // Rows recycled out of a full scrollback are gone and can no longer be committed.
         if committedRows < buffer.totalLinesTrimmed { committedRows = buffer.totalLinesTrimmed }
 
@@ -176,6 +378,7 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         }
 
         var newLines: [String] = []
+        let firstNewLine = committedLines
         if commitEnd > committedRows {
             for row in committedRows..<commitEnd {
                 let text = rowText(row)
@@ -184,8 +387,15 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
                 } else {
                     newLines.append(text)
                 }
+                // Wrapped rows join the line above, so several rows can resolve to one line.
+                resolveAnchors(row: row, line: firstNewLine + newLines.count - 1)
             }
             committedRows = commitEnd
+            committedLines += newLines.count
+            readCommands(from: newLines, firstLine: firstNewLine)
+            // Rows that went past uncommitted -- recycled out of a full scrollback -- are
+            // never coming back.
+            pendingAnchors = pendingAnchors.filter { $0.key >= committedRows }
         }
 
         // Live region: from the start of the cursor's line group to the bottom of the screen.
@@ -206,9 +416,15 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
             live.removeLast()
         }
 
+        let finished = justFinished.compactMap { index -> CommandBlock? in
+            index < rawBlocks.count ? published(rawBlocks[index]) : nil
+        }
+        justFinished.removeAll()
+
         delegate?.session(self, didUpdate: TerminalUpdate(newLines: newLines,
                                                           liveText: live.joined(separator: "\n"),
-                                                          alternateScreen: nil))
+                                                          alternateScreen: nil,
+                                                          finishedCommands: finished))
     }
 
     /// Whether the row is a continuation of the row above. Out-of-range rows are not.

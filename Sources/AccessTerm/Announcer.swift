@@ -5,6 +5,8 @@ import AppKit
 final class Announcer {
     /// When off, streamed output is silent. Bells and explicit reads still speak.
     var enabled = true
+    /// Where announcements go. Nil means VoiceOver; a test driver can set it to collect them.
+    var sink: ((String) -> Void)?
     var maxLinesPerAnnouncement = 30
 
     private var pending: [String] = []
@@ -45,6 +47,10 @@ final class Announcer {
     }
 
     private func post(_ text: String, priority: NSAccessibilityPriorityLevel) {
+        if let sink {
+            sink(text)
+            return
+        }
         let element: Any
         if let window = NSApp.mainWindow {
             element = window
