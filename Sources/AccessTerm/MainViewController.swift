@@ -497,7 +497,9 @@ final class MainViewController: NSViewController,
         // last line with content before anything has been run -- not textLength, which is the
         // empty line past the final newline and has nothing to read.
         if screenLines == nil, session.hasCommandMarkers, let block = commandBlocks.last {
-            landCaret(at: offset(ofLine: block.commandLine))
+            // Said the same way stepping between commands says it, so landing on a command
+            // sounds the same however you got there.
+            landCaret(at: offset(ofLine: block.commandLine), announcing: announcement(for: block))
             return
         }
         landCaret(at: lastCommandOffset ?? lastLineStart)
