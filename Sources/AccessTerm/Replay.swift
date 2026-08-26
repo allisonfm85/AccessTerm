@@ -38,6 +38,18 @@ enum Replay {
         for line in session.transcript.lines { print(line) }
         print("--- announced ---")
         for line in sink.announced { print(line) }
+        print("--- blocks ---")
+        for block in session.commandBlocks where !block.command.isEmpty {
+            print("block \(block.commandLine): \(block.command) "
+                  + "output \(block.outputLines.lowerBound)..<\(block.outputLines.upperBound)"
+                  + (block.isFinished ? " finished" : " running")
+                  + (block.exitCode.map { " exit \($0)" } ?? ""))
+            for turn in block.turns {
+                print("  turn \(turn.commandLine): \(turn.command) "
+                      + "output \(turn.outputLines.lowerBound)..<\(turn.outputLines.upperBound)"
+                      + (turn.isFinished ? " finished" : " running"))
+            }
+        }
         FileHandle.standardError.write(Data("--- live: \(sink.liveText)\n".utf8))
         return 0
     }

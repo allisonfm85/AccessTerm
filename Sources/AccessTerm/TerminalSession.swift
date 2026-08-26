@@ -35,6 +35,10 @@ struct CommandBlock {
     var exitCode: Int32?
     /// Whether the closing marker has arrived. A command still running is not finished.
     var isFinished: Bool
+    /// Exchanges inside this command, for a program that runs a conversation of its own.
+    /// Claude Code marks the start of each turn, so a session inside the terminal is a block
+    /// with one child per question. Empty for an ordinary command.
+    var turns: [CommandBlock] = []
 
     /// The line the command is on, which is the last line of the prompt.
     var commandLine: Int { max(promptLines.lowerBound, promptLines.upperBound - 1) }
@@ -87,13 +91,21 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
     /// First row of the last frame that was painted, which is as far back as "what is on
     /// screen right now" reaches when the cursor is parked on a blank row under it.
     private var frameStart = 0
-    /// Where the cursor was when the screen was last wiped, if that has happened since the
-    /// last update. Whatever is drawn next starts there, which is not necessarily where the
-    /// cursor has got to by the time the update runs.
-    private var screenErasedAt: Int?
 
     /// Command blocks as the markers describe them, oldest first.
     private var rawBlocks: [RawBlock] = []
+    /// Turns inside those blocks, oldest first: one per exchange with a program that runs a
+    /// conversation rather than printing output and exiting.
+    private var rawTurns: [RawTurn] = []
+    /// Turn-start markers that have not yet been claimed by the line that says what the turn
+    /// is, and turn-end markers that arrived before the turn they end had been read. Counts
+    /// rather than flags: a whole turn -- its marker, its question, its answer and its closing
+    /// marker -- can arrive before the rows are next read, and the turn still has to be found.
+    private var pendingTurnStarts = 0
+    private var pendingTurnEnds = 0
+    /// Whether the running program marks its turns. Once it does, a line that looks like the
+    /// start of one is only believed when a marker said a turn was starting.
+    private var programMarksTurns = false
     /// Marker positions waiting for their buffer row to become a transcript line. Markers
     /// that land on a row that is already a line are resolved as they arrive instead.
     private var pendingAnchors: [Int: [(block: Int, anchor: Anchor)]] = [:]
@@ -237,17 +249,35 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
     func dataReceived(slice: ArraySlice<UInt8>) {
         rawLog?.write(Data(slice))
         // What is on the screen becomes lines before anything wipes it: otherwise the line a
-        // screen-clearing command was typed on is gone before it was ever read, and its
-        // output arrives in the transcript with no command above it.
-        if wipesScreen(slice) { publishUpdate() }
-        terminal.feed(buffer: slice)
-        noteScreenErase()
+        // screen-clearing command was typed on, and anything printed just before the wipe in
+        // the same read, are gone before they were ever read. The feed is split at the wipe
+        // rather than merely flushed beforehand, so it makes no difference whether the two
+        // arrived together.
+        var index = slice.startIndex
+        while let wipe = firstScreenWipe(in: slice[index...]) {
+            if wipe > index {
+                terminal.feed(buffer: slice[index..<wipe])
+                publishUpdate(beforeWipe: true)
+            }
+            // Then the wipe itself, on its own, so that what it leaves behind can be looked
+            // at before whatever follows it in the same read is drawn into it.
+            let end = min(wipe + (slice[wipe + 1] == UInt8(ascii: "[") ? 4 : 2), slice.endIndex)
+            terminal.feed(buffer: slice[wipe..<end])
+            noteScreenErase()
+            index = end
+        }
+        if index < slice.endIndex {
+            terminal.feed(buffer: slice[index...])
+        }
+        // A wipe split across two reads is not spotted above; this catches the usual shape of
+        // one, cheaply, because the cursor is hardly ever at the top left corner.
+        if terminal.buffer.x == 0, terminal.buffer.y == 0 { noteScreenErase() }
         scheduleUpdate()
     }
 
-    /// Whether this chunk is about to erase the screen (ED 2), the scrollback (ED 3) or the
-    /// terminal (RIS).
-    private func wipesScreen(_ bytes: ArraySlice<UInt8>) -> Bool {
+    /// Where this chunk erases the screen (ED 2), the scrollback (ED 3) or the terminal (RIS),
+    /// if it does.
+    private func firstScreenWipe(in bytes: ArraySlice<UInt8>) -> Int? {
         var index = bytes.startIndex
         while index < bytes.endIndex {
             guard bytes[index] == 0x1b else {
@@ -255,30 +285,52 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
                 continue
             }
             let rest = bytes[index...].prefix(4)
-            if rest.count > 1, rest[rest.startIndex + 1] == UInt8(ascii: "c") { return true }
+            if rest.count > 1, rest[rest.startIndex + 1] == UInt8(ascii: "c") { return index }
             if rest.count > 3, rest[rest.startIndex + 1] == UInt8(ascii: "["),
                rest[rest.startIndex + 3] == UInt8(ascii: "J"),
                rest[rest.startIndex + 2] == UInt8(ascii: "2") || rest[rest.startIndex + 2] == UInt8(ascii: "3") {
-                return true
+                return index
             }
             index += 1
         }
-        return false
+        return nil
     }
 
-    /// Notices `clear` and its relatives: the cursor sent home and every row on the screen
-    /// blank. It has to be checked as the bytes arrive rather than when an update is
-    /// published, because the shell paints its prompt into the cleared screen a moment later
-    /// and by then it no longer looks wiped. The test past the cursor check is only reached
-    /// on the rare chunk that leaves the cursor at the top left corner.
+    /// Lets go of the rows when the screen has been wiped. It has to happen as the bytes
+    /// arrive rather than when an update is published: the shell paints its prompt into the
+    /// cleared screen a moment later, and by then it no longer looks wiped -- and worse, a
+    /// marker arriving in between would be pinned to the line the row used to hold.
+    ///
+    /// Erasing the scrollback (ED 3) on its own leaves the screen alone, and is caught instead
+    /// by the buffer being renumbered, in publishUpdate.
     private func noteScreenErase() {
-        guard !terminal.isCurrentBufferAlternate,
-              terminal.buffer.x == 0, terminal.buffer.y == 0 else { return }
+        guard !terminal.isCurrentBufferAlternate else { return }
         for row in 0..<terminal.rows {
             guard let line = terminal.getLine(row: row) else { break }
             if !lineText(line, trimRight: true).isEmpty { return }
         }
-        screenErasedAt = cursorRow
+        // The whole screen is free, so reading starts again at the top of it. Where the cursor
+        // happens to be is not the answer: a wipe that does not send the cursor home leaves
+        // whatever is drawn next above it.
+        resyncRows(from: terminal.buffer.totalLinesTrimmed + terminal.getTopVisibleRow())
+    }
+
+    /// The lines already in the transcript keep their text -- it is a transcript, not a screen
+    /// -- and let go of the rows they were built from, which have been wiped or renumbered and
+    /// are about to mean something else. Reading starts again at `restart`.
+    private func resyncRows(from restart: Int) {
+        rowToLine.removeAll()
+        for index in lineRows.indices { lineRows[index] = TerminalSession.noRows }
+        // Markers still waiting on a row are not lost with it: whatever they were waiting to
+        // see is about to be drawn where reading starts again. The C that says a command's
+        // output starts here arrives just before `clear` wipes the screen, and dropping it
+        // would leave the block with no output at all.
+        let waiting = pendingAnchors.values.flatMap { $0 }
+        pendingAnchors.removeAll()
+        if !waiting.isEmpty { pendingAnchors[restart] = waiting }
+        extentRow = restart
+        mappedFrom = restart
+        frameStart = restart
     }
 
     func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
@@ -320,6 +372,35 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         var command = ""
     }
 
+    /// One exchange inside a program that runs its own conversation. The line the turn is
+    /// named by is the one the program prints the question on ("you: ..." in Claude Code's
+    /// screen reader mode): the marker itself lands on whatever row the cursor happens to be
+    /// on, which is under the frame the program is about to repaint, not on the question.
+    private struct RawTurn {
+        /// Index into rawBlocks of the command this turn is inside.
+        var block: Int
+        /// The line the question is on, which is the turn's command line.
+        var commandLine: Int
+        /// The question, without the label the program printed it behind.
+        var command: String
+        /// Where the turn's output stops, which is where the next turn starts. Nil while this
+        /// is the last turn, whose output runs to the end of the transcript.
+        var outputEnd: Int?
+        /// Whether the program has marked the turn as done.
+        var isFinished = false
+    }
+
+    /// Whether a command is running right now, which is what makes a marker a turn marker:
+    /// the shell is not prompting while its command runs, so anything arriving now came from
+    /// the program.
+    private var programIsRunning: Bool {
+        guard let last = rawBlocks.last else { return false }
+        return last.didRun && !last.isFinished
+    }
+
+    /// What a program that labels its own turns prints the question behind.
+    private static let turnPrefix = "you: "
+
     /// The commands seen so far, oldest first.
     var commandBlocks: [CommandBlock] {
         guard hasCommandMarkers else {
@@ -329,7 +410,58 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
             return [CommandBlock(promptLines: 0..<0, command: "",
                                  outputLines: 0..<transcript.count, exitCode: nil, isFinished: false)]
         }
-        return rawBlocks.compactMap(published)
+        return rawBlocks.enumerated().compactMap { index, block in
+            guard var block = published(block) else { return nil }
+            block.turns = rawTurns.filter { $0.block == index }
+                .map { published($0, within: block) }
+            return block
+        }
+    }
+
+    /// A turn in transcript terms. Its output is everything after the question up to the next
+    /// turn, and while it is the last one, up to the end of the transcript.
+    private func published(_ turn: RawTurn, within block: CommandBlock) -> CommandBlock {
+        let outputStart = turn.commandLine + 1
+        // The last turn's output runs to the end of what the program printed, which is where
+        // the command it is inside ended if that has happened.
+        let end = turn.outputEnd ?? (block.isFinished ? block.outputLines.upperBound : transcript.count)
+        let outputEnd = max(outputStart, end)
+        return CommandBlock(promptLines: turn.commandLine..<outputStart,
+                            command: turn.command,
+                            outputLines: outputStart..<outputEnd,
+                            exitCode: nil,
+                            isFinished: turn.isFinished)
+    }
+
+    /// Notices the line a turn is named by, and opens the turn there.
+    ///
+    /// The line is usually one that already exists: the program draws the question over the
+    /// row its input box was on, so this arrives as a rewrite rather than as a new line.
+    private func noteTurn(line: Int, text: String) {
+        guard programIsRunning, let block = rawBlocks.indices.last,
+              text.hasPrefix(TerminalSession.turnPrefix) else { return }
+        let command = String(text.dropFirst(TerminalSession.turnPrefix.count))
+            .trimmingCharacters(in: .whitespaces)
+        guard !command.isEmpty else { return }
+        // The same line redrawn: the question is being repainted, not asked again.
+        if let index = rawTurns.lastIndex(where: { $0.block == block && $0.commandLine == line }) {
+            rawTurns[index].command = command
+            return
+        }
+        // A program that marks its turns is taken at its word, so that a question quoted in
+        // the middle of an answer does not look like a new one.
+        guard pendingTurnStarts > 0 || !programMarksTurns else { return }
+        if let last = rawTurns.indices.last, rawTurns[last].block == block,
+           rawTurns[last].outputEnd == nil {
+            rawTurns[last].outputEnd = line
+        }
+        var turn = RawTurn(block: block, commandLine: line, command: command)
+        if pendingTurnEnds > 0 {
+            turn.isFinished = true
+            pendingTurnEnds -= 1
+        }
+        rawTurns.append(turn)
+        pendingTurnStarts = max(0, pendingTurnStarts - 1)
     }
 
     /// Whether the shell is reporting command boundaries at all.
@@ -378,9 +510,16 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
 
         switch kind {
         case "A", "N":
+            // While a command is running the shell is not prompting, so this came from the
+            // program: Claude Code marks the start of every turn this way. The turn opens on
+            // the line that names it, which the program has not printed yet.
+            if programIsRunning {
+                programMarksTurns = true
+                pendingTurnStarts += 1
+                return
+            }
             // A prompt that has not run anything yet and gets marked again is the same prompt
-            // being redrawn, not a new one: Claude Code marks every frame it paints. Re-anchor
-            // it where it is now instead of opening a block per frame.
+            // being redrawn, not a new one. Re-anchor it where it is now.
             if let last = rawBlocks.last, !last.didRun, !last.isFinished {
                 rawBlocks[rawBlocks.count - 1].promptLine = nil
                 rawBlocks[rawBlocks.count - 1].commandLine = nil
@@ -389,20 +528,40 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
             }
             anchor(.prompt, row: row)
         case "B":
+            guard !programIsRunning else { return }
             openBlock()
             rawBlocks[rawBlocks.count - 1].commandColumn = terminal.buffer.x
             anchor(.command, row: row)
         case "C":
+            // Claude Code sends C and D together when a turn ends, having never used C for
+            // what it means. The turn is closed by D; this one has nothing to say.
+            guard !programIsRunning else { return }
             openBlock()
             rawBlocks[rawBlocks.count - 1].didRun = true
             anchor(.outputStart, row: row)
         case "D":
+            // The shell always reports an exit code with D (see ShellIntegration); a program
+            // marking the end of its own turn does not. So a bare D while a command is
+            // running is that program finishing a turn, not the command finishing.
+            if programIsRunning, fields.count == 1 {
+                if let last = rawTurns.indices.last, !rawTurns[last].isFinished,
+                   rawTurns[last].outputEnd == nil {
+                    rawTurns[last].isFinished = true
+                } else {
+                    pendingTurnEnds += 1
+                }
+                return
+            }
             openBlock()
             let index = rawBlocks.count - 1
             rawBlocks[index].isFinished = true
             if fields.count > 1 { rawBlocks[index].exitCode = Int32(fields[1]) }
             anchor(.outputEnd, row: row)
             justFinished.append(index)
+            // Whatever was running is gone, and so is its idea of turns.
+            pendingTurnStarts = 0
+            pendingTurnEnds = 0
+            programMarksTurns = false
         default:
             break
         }
@@ -472,7 +631,11 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         }
     }
 
-    func publishUpdate() {
+    /// `beforeWipe` is set for the read that happens just before the screen is erased, where
+    /// the rows to read cannot be found from the cursor: a wipe is normally preceded by
+    /// sending the cursor home, so by then it is above everything that is about to be lost.
+    /// Everything written since the last read is taken instead.
+    func publishUpdate(beforeWipe: Bool = false) {
         let buffer = terminal.buffer
 
         // Full-screen programs: hand the whole screen to the UI, build no lines.
@@ -495,26 +658,14 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         let screenTop = trimmed + top
         let absCursor = screenTop + buffer.y
 
-        // The rows we have lines for are no longer the rows we had lines for: the scrollback
-        // was thrown away (`clear`, Control-L with ESC[3J: the buffer is renumbered and both
-        // of these run backwards) or the screen was wiped without renumbering anything, which
-        // leaves the rows in place but hands them to whatever is drawn next. Either way the
-        // lines built from them keep their text and let go of their rows, and rows start being
-        // read again from the cursor. A program moving the cursor up to repaint its own output
-        // is NOT this: that is the ordinary case, handled by re-reading the rows below.
-        if trimmed < lastTrimmed || top < lastTop || screenErasedAt != nil {
-            // Rows are read again from where the wipe left the cursor, not from where the
-            // cursor has since got to: a `clear; ls` prints its output into the cleared screen
-            // before this ever runs, and that output is the first thing the transcript wants.
-            let restart = min(screenErasedAt ?? absCursor, absCursor)
-            rowToLine.removeAll()
-            for index in lineRows.indices { lineRows[index] = TerminalSession.noRows }
-            pendingAnchors.removeAll()
-            extentRow = restart
-            mappedFrom = restart
-            frameStart = restart
+        // The scrollback was thrown away (ED 3, a reset): the buffer has been renumbered
+        // under us, so the rows the lines were built from are gone. A wiped screen is the
+        // same thing without the renumbering, and is noticed as it happens instead. A program
+        // moving the cursor up to repaint its own output is neither: that is the ordinary
+        // case, handled by re-reading the rows below.
+        if trimmed < lastTrimmed || top < lastTop {
+            resyncRows(from: absCursor)
         }
-        screenErasedAt = nil
         lastTrimmed = trimmed
         lastTop = top
 
@@ -529,7 +680,8 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         // cursor is fair game: rows past the extent become new lines, rows below it rewrite
         // the lines they already produced.
         var readFrom = extentRow
-        if let changed = terminal.getScrollInvariantUpdateRange() {
+        let changed = terminal.getScrollInvariantUpdateRange()
+        if let changed {
             readFrom = min(readFrom, changed.startY + trimmed)
         }
         terminal.clearUpdateRange()
@@ -545,6 +697,16 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
 
         // Never split a wrapped logical line: back up to the start of the group the cursor sits in.
         var readEnd = absCursor
+        if beforeWipe {
+            // The cursor may already have been sent home ahead of the wipe, leaving the rows
+            // about to be lost below it. Take the run of rows that still have something on
+            // them; the blank row after it is where the screen's content ends.
+            let bottom = screenTop + terminal.rows
+            while readEnd < bottom,
+                  !rowText(readEnd).trimmingCharacters(in: .whitespaces).isEmpty {
+                readEnd += 1
+            }
+        }
         while readEnd > readFrom, isWrapped(readEnd) {
             readEnd -= 1
         }
@@ -578,6 +740,7 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
             }
             for r in group { rowToLine[r] = line }
             resolveAnchors(row: row, line: line)
+            noteTurn(line: line, text: text)
             touched.insert(line)
             row = end
         }

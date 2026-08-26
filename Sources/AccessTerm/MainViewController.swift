@@ -338,6 +338,18 @@ final class MainViewController: NSViewController,
         blocks.lastIndex { $0.allLines.lowerBound <= line }
     }
 
+    /// The block the caret is in and, when that block is a program running a conversation of
+    /// its own, the turn within it. Nil for a turn means the caret is in the block but above
+    /// its first turn, which is where the program's own startup output is.
+    private func location(of line: Int, in blocks: [CommandBlock]) -> (block: Int, turn: Int?)? {
+        guard let block = blockIndex(containing: line, in: blocks) else { return nil }
+        return (block, blocks[block].turns.lastIndex { $0.allLines.lowerBound <= line })
+    }
+
+    private func land(on block: CommandBlock) {
+        landCaret(at: offset(ofLine: block.commandLine), announcing: announcement(for: block))
+    }
+
     /// "ls -la" on its own, or "ls -la, exit code 1" when it failed.
     private func announcement(for block: CommandBlock) -> String {
         block.failed ? "\(block.command), exit code \(block.exitCode ?? 0)" : block.command
@@ -357,6 +369,31 @@ final class MainViewController: NSViewController,
             return
         }
         let line = caretLine
+
+        // Inside a command that is running a conversation of its own -- a Claude Code session
+        // -- stepping moves between its turns, and only leaves the block at either end.
+        if let here = location(of: line, in: blocks), !blocks[here.block].turns.isEmpty {
+            let turns = blocks[here.block].turns
+            if delta > 0 {
+                let next = here.turn.map { $0 + 1 } ?? 0
+                if turns.indices.contains(next) {
+                    land(on: turns[next])
+                    return
+                }
+            } else if let turn = here.turn {
+                // From inside a turn's answer, up goes to the question it answers first.
+                if line > turns[turn].commandLine {
+                    land(on: turns[turn])
+                } else if turn > 0 {
+                    land(on: turns[turn - 1])
+                } else {
+                    // At the first turn, one more step up is the command they are all inside.
+                    land(on: blocks[here.block])
+                }
+                return
+            }
+        }
+
         let current = blockIndex(containing: line, in: blocks)
 
         var target = (current ?? (delta < 0 ? blocks.count : -1)) + delta
@@ -368,8 +405,7 @@ final class MainViewController: NSViewController,
             announcer.announceNow(delta < 0 ? "No previous command" : "No next command")
             return
         }
-        let block = blocks[target]
-        landCaret(at: offset(ofLine: block.commandLine), announcing: announcement(for: block))
+        land(on: blocks[target])
     }
 
     @objc func copyBlockOutput(_ sender: Any?) {
@@ -382,7 +418,11 @@ final class MainViewController: NSViewController,
             announcer.announceNow("No output to copy")
             return
         }
-        let output = blocks[index].outputLines.clamped(to: transcript.lines.indices)
+        let block = blocks[index]
+        // Inside a turn, "the output" is the answer to that question, not everything the
+        // program has printed since it started.
+        let source = block.turns.last { $0.allLines.lowerBound <= caretLine } ?? block
+        let output = source.outputLines.clamped(to: transcript.lines.indices)
         guard !output.isEmpty else {
             announcer.announceNow("No output to copy")
             return
@@ -540,8 +580,9 @@ final class MainViewController: NSViewController,
         // empty line past the final newline and has nothing to read.
         if screenLines == nil, session.hasCommandMarkers, let block = commandBlocks.last {
             // Said the same way stepping between commands says it, so landing on a command
-            // sounds the same however you got there.
-            landCaret(at: offset(ofLine: block.commandLine), announcing: announcement(for: block))
+            // sounds the same however you got there. Inside a program running a conversation,
+            // the most recent thing asked is the most recent thing done.
+            land(on: block.turns.last ?? block)
             return
         }
         landCaret(at: lastCommandOffset ?? lastLineStart)

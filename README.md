@@ -65,8 +65,13 @@ In the transcript:
   line each time and speaking the command, plus its exit code if it failed: "ls -la, exit
   code 1". From inside a command's output, Option-Command-Up goes to the top of that command
   first, then to the one before it.
+- Inside a command that runs a conversation of its own -- a Claude Code session -- those keys
+  step between its turns instead, speaking each question. At the first turn, one more
+  Option-Command-Up is the command they are all inside ("claude"), and from there stepping
+  goes back to the shell's commands. See "Turns inside a command".
 - Command-Shift-O copies the output of the command the caret is in, without the prompt or the
-  command line.
+  command line. Inside a turn, it copies the answer to that question rather than everything
+  the program has printed since it started.
 - Command-Shift-E puts the caret on the last line, so VoiceOver reads it.
 - New output only scrolls the view when the caret is already at the end, so moving back to
   read something holds your place; Command-Shift-E returns to following the output.
@@ -113,6 +118,23 @@ The transcript is divided into blocks: one prompt, one command, its output, and 
 That is what Option-Command-Up and Option-Command-Down move between, what Command-Shift-O
 copies the output of, and what Command-1 lands on.
 
+### Turns inside a command
+
+A command that keeps running and holds a conversation is not one block with a wall of output
+in it. Claude Code marks the start of each turn (an OSC 133 `A` while its command is still
+running, which no shell would send: a shell is not prompting while its command runs), and
+prints the question on a line of its own behind a `you:` label. Each of those becomes a child
+block: the question is its command line, the answer is its output, and it ends where the next
+question starts.
+
+So a Claude session is one `claude` block with a turn in it per question, and
+Option-Command-Up and Option-Command-Down move between those turns while the caret is inside
+it. Command-1 lands on the most recent question. Command-Shift-O copies that turn's answer.
+
+A program that does not mark its turns, but does label them, gets the same treatment from the
+label alone: a line beginning with `you: ` starts a turn. Where the markers are there, they
+are what is believed, so a question quoted inside an answer does not look like a new turn.
+
 The boundaries come from OSC 133, the escape sequences a shell prints to say "prompt starts
 here", "the command starts here", "it is running now" and "it finished with this exit code".
 Nothing needs to be added to your dotfiles: zsh reads its startup files from `$ZDOTDIR`, so
@@ -122,8 +144,9 @@ launches the shell pointed at it. The files there source your own `.zshenv`, `.z
 and `preexec` hooks that print the markers. They are rewritten on every launch, so editing
 them is pointless -- edit your own dotfiles, which they run.
 
-Claude Code's screen reader mode prints the same markers itself, so a Claude session inside
-the terminal is divided into blocks whether or not the shell is cooperating.
+Claude Code's screen reader mode prints markers of its own, which is where the turns above
+come from. It sends `A` at the start of a turn and a bare `D` at the end of one; the shell's
+`D` always carries an exit code, which is how the two are told apart.
 
 If no markers ever arrive -- another shell, a `$ZDOTDIR` you have locked down -- the whole
 transcript is treated as one block. The commands above still work; there is just one thing
