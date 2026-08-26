@@ -26,9 +26,13 @@ Top to bottom:
 1. **Transcript** (a read-only text view, labeled "Transcript"). One line per logical line.
    Long lines that wrapped in the terminal are joined back into a single line. Because it is
    an ordinary text view, VoiceOver navigates it with the caret and reads by line, word, or
-   character; text is only ever appended, so the reading position never moves under you.
+   character. Lines are added at the end, and a line a program repaints is rewritten where it
+   already is rather than repeated (see "Programs that redraw"); the caret stays on the text
+   it was on either way.
 2. **Current line** (labeled "Current line"). Whatever the program has not finished printing:
-   normally the shell prompt, a partially printed line, or a progress line.
+   normally the shell prompt, a partially printed line, or a progress line. When the cursor is
+   parked on a blank row underneath a frame a program has just painted, this is the last line
+   of that frame rather than nothing.
 3. **Command line** (labeled "Command line"). A normal text field. Return sends the line.
 
 ## Keys
@@ -69,7 +73,11 @@ In the transcript:
 
 In the command line:
 
-- Return: send the line.
+- Return: send the line. The text and the Return go as two separate writes: programs decide
+  whether input was typed or pasted by how much arrives at once, and Claude Code treats
+  anything over about sixty bytes as a paste -- which used to mean that a long line's Return
+  was pasted text rather than "send this", and nothing happened. When the program has asked
+  for bracketed paste, the text is wrapped in the paste markers too.
 - Up/Down: local command history (kept by the app, so it reads normally).
 - Control-C, Control-D, Control-Z, Control-L, Escape: sent straight to the program.
 - Shift-Tab: sent to the program (Claude Code uses it to cycle permission modes).
@@ -77,6 +85,27 @@ In the command line:
 - Other Control keys keep their macOS text-editing meaning (Control-A, Control-E, Control-K).
 
 Terminal menu also has "Send Escape" and "Send Shift-Tab" for when you'd rather use the menu.
+
+## Programs that redraw
+
+A terminal is a grid, and plenty of programs treat it as one: they print something, then move
+the cursor back up over it and print it again with a word changed. Claude Code's screen reader
+mode repaints its whole frame -- the message being streamed, the spinner, the status lines,
+the input box -- several times a second, and patches single words in place in between.
+
+Rows are therefore not frozen once the cursor passes them. Every line remembers the rows it
+was built from, and when a program redraws one of those rows, the line it produced is rewritten
+in its place. A streamed reply reads as one line that grows, not as one copy per frame, and
+what the transcript holds at the end is what a sighted user would see on the screen.
+
+Only two things reset that: the scrollback being thrown away, and the screen being wiped
+(`clear`, Control-L). Then the lines already in the transcript keep their text -- it is a
+transcript, not a screen -- and rows start being read again from where the wipe left the
+cursor, so nothing that was on screen is overwritten by what comes next.
+
+New output is spoken when it is new: a line is announced when its text is not blank and is not
+what was last announced for that same line, so a frame that repaints the same words says
+nothing.
 
 ## Command blocks
 
@@ -104,6 +133,8 @@ for them to work on.
 
 - New output lines are batched every quarter second and spoken as one announcement.
   Bursts over 30 lines are summarised ("N lines of output. Last 30: ...").
+- A line is only spoken when it says something new: blank lines are skipped, and a line that
+  is redrawn with the text it already had is not repeated. See "Programs that redraw".
 - Moving the caret in the transcript is read by VoiceOver itself, as in any text area: the
   line, word or character moved over, and its own wording for extending or shrinking the
   selection. The app adds nothing to it, so it follows your VoiceOver verbosity settings.
@@ -138,6 +169,14 @@ to compare what a program actually sent against what the transcript made of it:
 
 The variable has to be in the app's own environment, so launch the binary directly rather than
 with `open`.
+
+A capture can be replayed through the transcript assembly without a window, a shell or a pty,
+which is how a program that comes out wrong becomes a repeatable check:
+
+    ./build/AccessTerm.app/Contents/MacOS/AccessTerm --replay /tmp/raw.log
+
+It prints the transcript the capture produces after a `--- transcript ---` marker, and the
+current line on standard error.
 
 ## Known limitations in this milestone
 

@@ -4,8 +4,10 @@ import AppKit
 ///  1. Transcript: a read-only NSTextView. VoiceOver drives it with the caret, so up/down read
 ///     by line, Option-left/right by word and plain left/right by character, Shift-arrows
 ///     extend the selection, and Command-A, Command-C and Command-F work as in any text view.
-///     Text is only ever appended, so the reading position never moves under you.
-///  2. Current line: a label with whatever is not yet committed (usually the prompt).
+///     The session builds the lines; this mirrors them, adding new ones at the end and
+///     rewriting in place the ones whose rows a program has redrawn, without moving the caret
+///     off the text it was on.
+///  2. Current line: a label with whatever is not part of a line yet (usually the prompt).
 ///  3. Command line: a native text field. Enter sends the line to the shell.
 final class MainViewController: NSViewController,
                                 NSTextFieldDelegate, TerminalSessionDelegate,
@@ -21,17 +23,13 @@ final class MainViewController: NSViewController,
 
     private let monoFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
 
-    /// Committed transcript lines. This stays the source of truth; the text view mirrors it.
-    private var lines: [String] = []
-    /// Character offset of the start of each line, so a block's line numbers can be turned
-    /// into somewhere to put the caret without measuring the transcript again each time.
-    private var lineOffsets: [Int] = []
+    /// The lines themselves live in the session, which builds them; the text view mirrors it.
+    private var transcript: Transcript { session.transcript }
     /// Non-nil while a full-screen program owns the alternate screen; the text view shows this instead.
     private var screenLines: [String]?
 
-    /// Character length of the transcript text. Tracked as lines are appended so it stays
-    /// correct even while the alternate screen is temporarily showing something else.
-    private var transcriptLength = 0
+    /// What has been spoken for each transcript line, so a redraw of the same words is silent.
+    private var news = LineNews()
     /// Where the echo of the most recently submitted command starts. Command-1 lands here.
     private var lastCommandOffset: Int?
 
@@ -128,8 +126,7 @@ final class MainViewController: NSViewController,
     override func viewDidLoad() {
         super.viewDidLoad()
         session.delegate = self
-        appendLines(["AccessTerm ready. Shell: /bin/zsh. Command-1 transcript, Command-2 command line."],
-                    fromSession: false)
+        appendExternal(["AccessTerm ready. Shell: /bin/zsh. Command-1 transcript, Command-2 command line."])
         session.start()
     }
 
@@ -218,7 +215,7 @@ final class MainViewController: NSViewController,
         let text = commandField.stringValue
         // The shell echoes the command, so the transcript's current end is where that echo
         // will land: the top of everything this command is about to produce.
-        lastCommandOffset = transcriptLength
+        lastCommandOffset = transcript.length
         session.send(text: text + "\r")
         if !text.isEmpty {
             if history.last != text { history.append(text) }
@@ -241,10 +238,6 @@ final class MainViewController: NSViewController,
 
     private var textAttributes: [NSAttributedString.Key: Any] {
         [.font: monoFont, .foregroundColor: NSColor.textColor]
-    }
-
-    private func transcriptText() -> String {
-        lines.map { $0 + "\n" }.joined()
     }
 
     /// Replaces the whole contents. Only used when switching between the transcript and a
@@ -319,19 +312,19 @@ final class MainViewController: NSViewController,
     /// Transcript line the caret is on.
     private var caretLine: Int {
         let offset = textView.selectedRange().location
-        guard !lineOffsets.isEmpty else { return 0 }
+        let offsets = transcript.offsets
+        guard !offsets.isEmpty else { return 0 }
         var low = 0
-        var high = lineOffsets.count - 1
+        var high = offsets.count - 1
         while low < high {
             let middle = (low + high + 1) / 2
-            if lineOffsets[middle] <= offset { low = middle } else { high = middle - 1 }
+            if offsets[middle] <= offset { low = middle } else { high = middle - 1 }
         }
         return low
     }
 
     private func offset(ofLine line: Int) -> Int {
-        guard !lineOffsets.isEmpty else { return 0 }
-        return lineOffsets[max(0, min(line, lineOffsets.count - 1))]
+        transcript.offset(ofLine: line)
     }
 
     /// Blocks worth navigating to: ones with a command in them. A block the shell opened for
@@ -389,29 +382,28 @@ final class MainViewController: NSViewController,
             announcer.announceNow("No output to copy")
             return
         }
-        let output = blocks[index].outputLines.clamped(to: lines.indices)
+        let output = blocks[index].outputLines.clamped(to: transcript.lines.indices)
         guard !output.isEmpty else {
             announcer.announceNow("No output to copy")
             return
         }
-        let text = output.map { lines[$0] }.joined(separator: "\n") + "\n"
+        let text = output.map { transcript.lines[$0] }.joined(separator: "\n") + "\n"
         copyToPasteboard(text, announce: "Copied output, \(output.count) "
                          + (output.count == 1 ? "line" : "lines"))
     }
 
-    /// `fromSession` is false for lines the app writes itself -- the ready message, the exit
-    /// message. Command blocks are numbered in transcript lines, so the session counts those
-    /// too or every block after one of them points a line too high.
-    private func appendLines(_ newLines: [String], fromSession: Bool = true) {
-        guard !newLines.isEmpty else { return }
-        if !fromSession { session.noteExternalTranscriptLines(newLines.count) }
-        for line in newLines {
-            lineOffsets.append(transcriptLength)
-            transcriptLength += (line as NSString).length + 1
-        }
-        lines.append(contentsOf: newLines)
+    /// Lines the app writes itself -- the ready message, the exit message. They go through
+    /// the session so that they take transcript numbers like any other line: blocks are
+    /// numbered in transcript lines, and anything uncounted puts every later block a line out.
+    private func appendExternal(_ newLines: [String]) {
+        session.appendExternal(newLines)
+        mirrorAppended(newLines)
+    }
+
+    /// Adds lines the session has already put in the transcript to the text view.
+    private func mirrorAppended(_ newLines: [String]) {
+        guard !newLines.isEmpty, screenLines == nil, let storage = textView.textStorage else { return }
         let chunk = newLines.map { $0 + "\n" }.joined()
-        guard screenLines == nil, let storage = textView.textStorage else { return }
         // If the user has moved the caret back to read something, new output must not drag
         // the view away from them.
         let follow = shouldFollowOutput
@@ -427,6 +419,55 @@ final class MainViewController: NSViewController,
         if follow {
             textView.scrollRangeToVisible(NSRange(location: textLength, length: 0))
         }
+    }
+
+    /// Rewrites lines whose rows the program has redrawn. The edits are applied in the order
+    /// the session made them, because each one's range is the range to replace once the
+    /// edits before it are in.
+    private func mirrorEdits(_ edits: [Transcript.Edit]) {
+        guard !edits.isEmpty, screenLines == nil, let storage = textView.textStorage else { return }
+        let follow = shouldFollowOutput
+        var selection = textView.selectedRange()
+        textView.withoutSelfVoicing {
+            for edit in edits {
+                guard NSMaxRange(edit.range) <= storage.length else { continue }
+                storage.replaceCharacters(in: edit.range,
+                                          with: NSAttributedString(string: edit.text,
+                                                                   attributes: textAttributes))
+                let delta = (edit.text as NSString).length - edit.range.length
+                selection = adjusting(selection, forEditIn: edit.range, delta: delta)
+                if let offset = lastCommandOffset, offset >= NSMaxRange(edit.range) {
+                    lastCommandOffset = offset + delta
+                }
+            }
+            textView.setSelectedRanges([NSValue(range: selection)],
+                                       affinity: textView.selectionAffinity,
+                                       stillSelecting: false)
+        }
+        if follow {
+            textView.scrollRangeToVisible(NSRange(location: textLength, length: 0))
+        }
+    }
+
+    /// Keeps the caret on the text it was on when a line elsewhere is rewritten. A caret
+    /// inside the line being rewritten has nowhere to stay, so it holds the line.
+    private func adjusting(_ selection: NSRange, forEditIn range: NSRange, delta: Int) -> NSRange {
+        var result = selection
+        let editEnd = NSMaxRange(range)
+        if result.location >= editEnd {
+            result.location += delta
+        } else if result.location > range.location {
+            result.location = min(result.location, editEnd + delta)
+            result.length = 0
+        } else if NSMaxRange(result) > editEnd {
+            result.length += delta
+        }
+        return result
+    }
+
+    /// Speaks what is new in a batch, plus anything the app has to add itself.
+    private func announce(_ update: TerminalUpdate, extra: [String]) {
+        announcer.enqueue(news.news(in: update) + extra)
     }
 
     // MARK: - TerminalSessionDelegate
@@ -453,17 +494,18 @@ final class MainViewController: NSViewController,
 
         if screenLines != nil {
             screenLines = nil
-            setText(transcriptText())
+            setText(transcript.text())
             moveCaret(to: textLength)
             announcer.announceNow("Returned to transcript")
         }
 
-        appendLines(update.newLines)
+        mirrorEdits(update.edits)
+        mirrorAppended(update.newLines)
         // A command that failed says so on the end of whatever it printed.
         let failures = update.finishedCommands
             .filter { $0.failed }
             .map { "exit code \($0.exitCode ?? 0)" }
-        announcer.enqueue(update.newLines + failures)
+        announce(update, extra: failures)
 
         if update.liveText != liveText {
             liveText = update.liveText
@@ -483,7 +525,7 @@ final class MainViewController: NSViewController,
 
     func session(_ session: TerminalSession, didTerminateWithExitCode code: Int32?) {
         let message = "[Shell exited" + (code.map { " with code \($0)" } ?? "") + "]"
-        appendLines([message], fromSession: false)
+        appendExternal([message])
         liveLabel.stringValue = message
         commandField.isEnabled = false
         announcer.announceNow(message)
@@ -537,7 +579,8 @@ final class MainViewController: NSViewController,
     }
 
     @objc func copyAll(_ sender: Any?) {
-        copyToPasteboard(lines.joined(separator: "\n"), announce: "Copied entire transcript")
+        copyToPasteboard(transcript.lines.joined(separator: "\n"),
+                         announce: "Copied entire transcript")
     }
 
     private func copyToPasteboard(_ text: String, announce: String) {
