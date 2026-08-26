@@ -237,3 +237,7 @@ to an ordinary text area, which is what VoiceOver navigates best.
 2. This: shell integration (OSC 133): command/output blocks, jump between commands, copy
    output only. Custom VoiceOver rotors for commands, errors and Claude turns are not in yet.
 3. Better full-screen program support and a direct-input mode.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
