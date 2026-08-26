@@ -193,6 +193,17 @@ to compare what a program actually sent against what the transcript made of it:
 The variable has to be in the app's own environment, so launch the binary directly rather than
 with `open`.
 
+The raw log says what a program printed, but not what it was answered with. `ACCESSTERM_HEXLOG`
+adds that: every byte written to the pty as a `TX` line and every byte read as an `RX` line, in
+hex with a millisecond timestamp. It is what a prompt that looks stuck needs, since it shows
+whether an answer was sent at all and what the program did next:
+
+    ACCESSTERM_LOG=/tmp/raw.log ACCESSTERM_HEXLOG=/tmp/raw.hex \
+        ./build/AccessTerm.app/Contents/MacOS/AccessTerm
+
+With only `ACCESSTERM_LOG` set, the hex log goes to that path with `.hex` appended. Both logs
+are off unless their variable is set.
+
 A capture can be replayed through the transcript assembly without a window, a shell or a pty,
 which is how a program that comes out wrong becomes a repeatable check:
 

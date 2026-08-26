@@ -62,11 +62,31 @@ enum Replay {
         /// what it would sound like as well as for what it would read like.
         var announced: [String] = []
         private var news = LineNews()
+        /// Mirrors the UI's suppression of a live question that later arrives as a line.
+        private var announcedLiveText = ""
 
         func session(_ session: TerminalSession, didUpdate update: TerminalUpdate) {
             guard update.alternateScreen == nil else { return }
             liveText = update.liveText
-            announced.append(contentsOf: news.news(in: update))
+            let alreadySpoken = announcedLiveText
+            var lines = news.news(in: update)
+            if !alreadySpoken.isEmpty {
+                lines.removeAll { $0.trimmingCharacters(in: .whitespaces) == alreadySpoken }
+            }
+            announced.append(contentsOf: lines + liveQuestion(in: update))
+        }
+
+        /// The UI's rule, so a capture shows what it would actually say: a live line is a
+        /// program's question only while a command is running.
+        private func liveQuestion(in update: TerminalUpdate) -> [String] {
+            guard update.programIsRunning else {
+                announcedLiveText = ""
+                return []
+            }
+            let question = update.liveText.trimmingCharacters(in: .whitespaces)
+            guard !question.isEmpty, question != announcedLiveText else { return [] }
+            announcedLiveText = question
+            return [question]
         }
         func sessionDidRingBell(_ session: TerminalSession) {}
         func session(_ session: TerminalSession, didChangeTitle title: String) {}

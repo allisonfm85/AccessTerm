@@ -18,6 +18,11 @@ struct TerminalUpdate {
     var liveText: String = ""
     /// Non-nil while a full-screen program (vim, htop, an attached session) owns the alternate screen.
     var alternateScreen: [String]?
+    /// Whether a command was running when this batch was read. It is what tells a live line
+    /// that is a program's question -- "Path to local repository (default: .)", which never
+    /// ends in a newline and so never becomes a line -- from the shell's own prompt, which
+    /// is announced already as part of the command that finished.
+    var programIsRunning: Bool = false
     /// Commands that finished while this batch was being read, for announcing alongside it.
     var finishedCommands: [CommandBlock] = []
 }
@@ -132,6 +137,32 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         return handle
     }()
 
+    /// Diagnostic only: companion to rawLog, at ACCESSTERM_HEXLOG, or at "<ACCESSTERM_LOG>.hex"
+    /// when only that is set. Every byte written to the pty is appended as a "TX" line and
+    /// every byte read from it as an "RX" line, in hex with a millisecond timestamp. Where the
+    /// raw log says what a program printed, this says what it was answered with and when,
+    /// which is what a prompt that looks stuck needs. Nil when neither variable is set.
+    private let hexLog: FileHandle? = {
+        let environment = ProcessInfo.processInfo.environment
+        let explicit = environment["ACCESSTERM_HEXLOG"].flatMap { $0.isEmpty ? nil : $0 }
+        let derived = environment["ACCESSTERM_LOG"].flatMap { $0.isEmpty ? nil : $0 + ".hex" }
+        guard let path = explicit ?? derived else { return nil }
+        FileManager.default.createFile(atPath: path, contents: nil)
+        guard let handle = FileHandle(forWritingAtPath: path) else { return nil }
+        handle.seekToEndOfFile()
+        return handle
+    }()
+
+    /// Appends one line to the hex log. Does nothing when the log is off, which is the
+    /// normal case.
+    private func hexLog(_ tag: String, _ bytes: ArraySlice<UInt8>) {
+        guard let hexLog else { return }
+        let ms = Int(Date().timeIntervalSince1970 * 1000) % 100_000_000
+        let hex = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
+        let printable = String(bytes.map { $0 >= 0x20 && $0 < 0x7f ? Character(UnicodeScalar($0)) : "." })
+        hexLog.write(Data("\(ms) \(tag) [\(bytes.count)] \(hex)  |\(printable)|\n".utf8))
+    }
+
     /// Wide and tall so long lines wrap less and output settles into scrollback quickly.
     init(cols: Int = 160, rows: Int = 50) {
         self.cols = cols
@@ -225,6 +256,7 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
 
     func send(bytes: [UInt8]) {
         guard isRunning, !bytes.isEmpty else { return }
+        hexLog("TX", bytes[...])
         process.send(data: bytes[...])
     }
 
@@ -233,6 +265,7 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
     func send(source: Terminal, data: ArraySlice<UInt8>) {
         // Replies the terminal must send back to the application (cursor position reports, etc.)
         guard isRunning else { return }
+        hexLog("TX-reply", data)
         process.send(data: data)
     }
 
@@ -252,6 +285,7 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
 
     func dataReceived(slice: ArraySlice<UInt8>) {
         rawLog?.write(Data(slice))
+        hexLog("RX", slice)
         // What is on the screen becomes lines before anything wipes it: otherwise the line a
         // screen-clearing command was typed on, and anything printed just before the wipe in
         // the same read, are gone before they were ever read. The feed is split at the wipe
@@ -340,6 +374,7 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
     func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
         isRunning = false
         try? rawLog?.close()
+        try? hexLog?.close()
         publishUpdate()
         delegate?.session(self, didTerminateWithExitCode: exitCode)
     }
@@ -397,7 +432,7 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
     /// Whether a command is running right now, which is what makes a marker a turn marker:
     /// the shell is not prompting while its command runs, so anything arriving now came from
     /// the program.
-    private var programIsRunning: Bool {
+    var programIsRunning: Bool {
         guard let last = rawBlocks.last else { return false }
         return last.didRun && !last.isFinished
     }
@@ -799,6 +834,7 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
                                                           edits: edits,
                                                           liveText: liveText,
                                                           alternateScreen: nil,
+                                                          programIsRunning: programIsRunning,
                                                           finishedCommands: finished))
     }
 

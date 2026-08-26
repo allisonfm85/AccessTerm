@@ -34,6 +34,9 @@ final class MainViewController: NSViewController,
     private var lastCommandOffset: Int?
 
     private var liveText = ""
+    /// The last live line spoken as a program's question, so it is not said again when it
+    /// later gains its newline and arrives as a transcript line.
+    private var announcedLiveText = ""
 
     private var history: [String] = []
     private var historyIndex = 0
@@ -506,8 +509,31 @@ final class MainViewController: NSViewController,
     }
 
     /// Speaks what is new in a batch, plus anything the app has to add itself.
-    private func announce(_ update: TerminalUpdate, extra: [String]) {
-        announcer.enqueue(news.news(in: update) + extra)
+    private func announce(_ update: TerminalUpdate, extra: [String], alreadySpoken: String) {
+        var lines = news.news(in: update)
+        if !alreadySpoken.isEmpty {
+            lines.removeAll { $0.trimmingCharacters(in: .whitespaces) == alreadySpoken }
+        }
+        announcer.enqueue(lines + extra)
+    }
+
+    /// A program's question, when this batch brought a new one.
+    ///
+    /// A prompt that waits for an answer does not end in a newline, so it never becomes a
+    /// transcript line and nothing else here would ever say it: gh asking "Path to local
+    /// repository (default: .)" straight after a numbered menu sounds, otherwise, exactly like
+    /// the menu having hung. Only while a command is running is a live line a program's; at the
+    /// shell prompt it is the prompt itself, which the command that just finished already
+    /// accounts for.
+    private func liveQuestion(in update: TerminalUpdate) -> [String] {
+        guard update.programIsRunning else {
+            announcedLiveText = ""
+            return []
+        }
+        let question = update.liveText.trimmingCharacters(in: .whitespaces)
+        guard !question.isEmpty, question != announcedLiveText else { return [] }
+        announcedLiveText = question
+        return [question]
     }
 
     // MARK: - TerminalSessionDelegate
@@ -545,7 +571,10 @@ final class MainViewController: NSViewController,
         let failures = update.finishedCommands
             .filter { $0.failed }
             .map { "exit code \($0.exitCode ?? 0)" }
-        announce(update, extra: failures)
+        // What was spoken before this batch: liveQuestion is about to move it on, and a line
+        // arriving now is only a repeat of the question as it stood a moment ago.
+        let alreadySpoken = announcedLiveText
+        announce(update, extra: failures + liveQuestion(in: update), alreadySpoken: alreadySpoken)
 
         if update.liveText != liveText {
             liveText = update.liveText
