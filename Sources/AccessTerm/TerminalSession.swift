@@ -198,8 +198,11 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
     /// arrives at once, and Claude Code treats anything over about sixty bytes as a paste --
     /// which means a Return in the same write is pasted text, not "send this". Splitting the
     /// write leaves the Return unmistakable however long the line is. When the program has
-    /// asked for bracketed paste, the text is wrapped in the paste markers as well, so it is
-    /// told what it was rather than left to guess.
+    /// asked for bracketed paste, only text that spans more than one line is wrapped in the
+    /// paste markers: that is the case the markers exist for, and it is the case a program
+    /// would otherwise misread. A single line goes as plain characters, because a program
+    /// waiting on one keystroke -- Claude Code's "press y or n" trust prompt, say -- reads a
+    /// bracketed "y" as pasted text and discards it.
     func send(text: String) {
         guard let terminator = text.last, terminator == "\r" || terminator == "\n" else {
             send(bytes: Array(text.utf8))
@@ -207,7 +210,8 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         }
         let body = String(text.dropLast())
         if !body.isEmpty {
-            if terminal.bracketedPasteMode {
+            let isMultiLine = body.contains { $0 == "\n" || $0 == "\r" }
+            if terminal.bracketedPasteMode && isMultiLine {
                 send(bytes: Array("\u{1b}[200~\(body)\u{1b}[201~".utf8))
             } else {
                 send(bytes: Array(body.utf8))
