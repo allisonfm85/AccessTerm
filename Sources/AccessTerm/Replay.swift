@@ -73,7 +73,7 @@ enum Replay {
             if !alreadySpoken.isEmpty {
                 lines.removeAll { $0.trimmingCharacters(in: .whitespaces) == alreadySpoken }
             }
-            announced.append(contentsOf: lines + liveQuestion(in: update))
+            announced.append(contentsOf: (lines + liveQuestion(in: update)).map(PromptDefault.spoken))
         }
 
         /// The UI's rule, so a capture shows what it would actually say: a live line is a

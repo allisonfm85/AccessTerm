@@ -166,6 +166,10 @@ for them to work on.
   says before it.
 - A command that ends with a non-zero exit code adds "exit code 127" to the end of the
   announcement of whatever it printed.
+- A yes/no prompt says what Return alone will do: a line ending in `[Y/n]`, `[y/N]`,
+  `[Y/n/a]` or `(default: yes)` is announced with "Press Return for yes." (or no) on the
+  end. The capital is the default, so a prompt that names none (`[y/n]`) gets no hint. Only
+  the announcement carries it; the transcript stays verbatim for copying.
 - A terminal bell speaks "Attention" plus the current line at high priority. Claude Code's
   screen reader mode rings the bell when it wants input, so this is how you know it's your turn.
 - Full-screen programs (vim, htop, an attached Claude session) switch the transcript to a

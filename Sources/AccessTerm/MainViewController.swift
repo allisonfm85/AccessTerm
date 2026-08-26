@@ -514,7 +514,9 @@ final class MainViewController: NSViewController,
         if !alreadySpoken.isEmpty {
             lines.removeAll { $0.trimmingCharacters(in: .whitespaces) == alreadySpoken }
         }
-        announcer.enqueue(lines + extra)
+        // The hint about what Return alone does goes on here, after the check above has
+        // matched a committed line against the live text it repeats: both are still verbatim.
+        announcer.enqueue((lines + extra).map(PromptDefault.spoken))
     }
 
     /// A program's question, when this batch brought a new one.
