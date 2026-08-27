@@ -25,6 +25,14 @@ struct TerminalUpdate {
     var programIsRunning: Bool = false
     /// Commands that finished while this batch was being read, for announcing alongside it.
     var finishedCommands: [CommandBlock] = []
+    /// Lines in this batch that are the shell's echo of a command the user typed. They are
+    /// transcript lines like any other -- they are read and copied -- but announcing them
+    /// would say back what the user has just this moment typed.
+    var userEchoLines: Set<Int> = []
+    /// Whether `liveText` is one of those echo lines. It is, whenever a running command has
+    /// printed nothing yet: the cursor is parked on the blank row under the line the command
+    /// was typed on, and that line is then the answer to "what is on screen right now".
+    var liveTextIsUserEcho = false
 }
 
 /// One command, its output and how it ended, as marked by OSC 133. Everything is in
@@ -116,6 +124,9 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
     private var pendingAnchors: [Int: [(block: Int, anchor: Anchor)]] = [:]
     /// Blocks that finished since the last update went out.
     private var justFinished: [Int] = []
+    /// Transcript lines the user's own typing was echoed onto. Line numbers are permanent, so
+    /// a line marked once stays marked however often its row is later redrawn.
+    private var userEchoLines: Set<Int> = []
     private var updateScheduled = false
     private(set) var isRunning = false
 
@@ -655,7 +666,22 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
             let column = min(rawBlocks[index].commandColumn, text.count)
             rawBlocks[index].command = String(text[column...])
                 .trimmingCharacters(in: .whitespaces)
+            noteEcho(rawBlocks[index])
         }
+    }
+
+    /// Marks the lines a command was echoed onto: from where the prompt ended, which is where
+    /// B put the command's first character, to where C said the command started running.
+    /// Usually that is the one line the prompt and the command share; a command typed across
+    /// continuation lines covers each of them.
+    ///
+    /// C often has not landed on a line yet -- a command that prints nothing leaves it on the
+    /// row the next prompt will be drawn on -- and until it does, the command is the one line
+    /// it was read off.
+    private func noteEcho(_ block: RawBlock) {
+        guard !block.command.isEmpty, let line = block.commandLine else { return }
+        let end = max(line + 1, block.outputStart ?? line + 1)
+        userEchoLines.formUnion(line..<end)
     }
 
     // MARK: - Transcript assembly
@@ -808,6 +834,7 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
             live.removeLast()
         }
         var liveText = live.joined(separator: "\n")
+        var liveIsEcho = false
         if liveText.isEmpty {
             // The cursor is parked on an empty row under the frame that was just painted --
             // where Claude Code leaves it between frames. "Nothing" is the wrong answer to
@@ -818,6 +845,7 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
                 let text = rowText(above)
                 if !text.trimmingCharacters(in: .whitespaces).isEmpty {
                     liveText = text
+                    liveIsEcho = rowToLine[above].map(userEchoLines.contains) ?? false
                     break
                 }
                 above -= 1
@@ -835,7 +863,9 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
                                                           liveText: liveText,
                                                           alternateScreen: nil,
                                                           programIsRunning: programIsRunning,
-                                                          finishedCommands: finished))
+                                                          finishedCommands: finished,
+                                                          userEchoLines: userEchoLines.intersection(touched),
+                                                          liveTextIsUserEcho: liveIsEcho))
     }
 
     /// Whether the row is a continuation of the row above. Out-of-range rows are not.

@@ -32,6 +32,9 @@ final class MainViewController: NSViewController,
     private var news = LineNews()
     /// Where the echo of the most recently submitted command starts. Command-1 lands here.
     private var lastCommandOffset: Int?
+    /// The command just sent, until its echo has been seen and left unannounced. Only used
+    /// when the shell is not marking its commands: see dropEcho.
+    private var pendingEcho: String?
 
     private var liveText = ""
     /// The last live line spoken as a program's question, so it is not said again when it
@@ -219,6 +222,8 @@ final class MainViewController: NSViewController,
         // The shell echoes the command, so the transcript's current end is where that echo
         // will land: the top of everything this command is about to produce.
         lastCommandOffset = transcript.length
+        let typed = text.trimmingCharacters(in: .whitespaces)
+        pendingEcho = typed.isEmpty ? nil : typed
         session.send(text: text + "\r")
         if !text.isEmpty {
             if history.last != text { history.append(text) }
@@ -514,9 +519,25 @@ final class MainViewController: NSViewController,
         if !alreadySpoken.isEmpty {
             lines.removeAll { $0.trimmingCharacters(in: .whitespaces) == alreadySpoken }
         }
-        // The hint about what Return alone does goes on here, after the check above has
-        // matched a committed line against the live text it repeats: both are still verbatim.
+        dropEcho(from: &lines)
+        // The hint about what Return alone does goes on here, after the checks above have
+        // matched a committed line against text it repeats: both are still verbatim.
         announcer.enqueue((lines + extra).map(PromptDefault.spoken))
+    }
+
+    /// Drops the echo of the command just sent, for a shell that does not mark its commands.
+    /// Where the markers are there, the session says which lines the echo landed on and
+    /// LineNews has already left them out; with no B and C to bracket it, all that identifies
+    /// the echo is that it is the text that was just sent. It comes back exactly once, right
+    /// after the command goes, so it is matched once and forgotten: a line that repeats the
+    /// command later is something a program printed, and is news.
+    private func dropEcho(from lines: inout [String]) {
+        guard !session.hasCommandMarkers, let echo = pendingEcho,
+              let index = lines.firstIndex(where: {
+                  $0.trimmingCharacters(in: .whitespaces) == echo
+              }) else { return }
+        lines.remove(at: index)
+        pendingEcho = nil
     }
 
     /// A program's question, when this batch brought a new one.
@@ -532,6 +553,9 @@ final class MainViewController: NSViewController,
             announcedLiveText = ""
             return []
         }
+        // A command that has printed nothing yet leaves the line it was typed on as the
+        // nearest thing on screen. It is shown, but it is the user's own typing coming back.
+        guard !update.liveTextIsUserEcho else { return [] }
         let question = update.liveText.trimmingCharacters(in: .whitespaces)
         guard !question.isEmpty, question != announcedLiveText else { return [] }
         announcedLiveText = question

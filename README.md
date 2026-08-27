@@ -295,6 +295,14 @@ one thing for them to work on.
 - A line is only spoken when it says something new. Blank lines are skipped, and a line
   redrawn with the text it already had is not repeated. See [Programs that redraw the
   screen](#programs-that-redraw-the-screen).
+- The command coming back is not spoken. A shell prints what you typed back at you, and that
+  echo becomes a transcript line like any other -- but you typed it a moment ago, so hearing it
+  read out says nothing you did not already know. The markers say where it is: everything
+  between the end of the prompt and the command starting to run is your own typing. Without
+  markers, a line that is exactly what was just sent is skipped once, which is how often the
+  echo appears. It is only the announcement that is suppressed: the line is in the transcript,
+  it is read when you arrow onto it, it is copied, and Command-1 still speaks it, because
+  landing on the last command is something you asked for.
 - Moving the caret in the transcript is read by VoiceOver itself, exactly as in any text area:
   the line, word or character you moved over, and VoiceOver's own wording for extending or
   shrinking a selection. The app adds nothing, so this follows your VoiceOver verbosity

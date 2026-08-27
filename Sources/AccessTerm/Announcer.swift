@@ -1,9 +1,10 @@
 import AppKit
 
 /// Picks what in a batch of transcript changes is worth speaking: a line that is not blank,
-/// and that does not already say, for that line, what was last announced for it. A program
-/// repainting its frame rewrites the same lines with the same words several times a second,
-/// and none of that is news; a line that fills in, or changes, is spoken once.
+/// that is not the echo of what the user has just typed, and that does not already say, for
+/// that line, what was last announced for it. A program repainting its frame rewrites the same
+/// lines with the same words several times a second, and none of that is news; a line that
+/// fills in, or changes, is spoken once.
 struct LineNews {
     private var announced: [Int: String] = [:]
 
@@ -17,6 +18,7 @@ struct LineNews {
         for line in byLine.keys.sorted() {
             guard let text = byLine[line],
                   !text.trimmingCharacters(in: .whitespaces).isEmpty,
+                  !update.userEchoLines.contains(line),
                   announced[line] != text else { continue }
             announced[line] = text
             spoken.append(text)

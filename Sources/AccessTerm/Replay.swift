@@ -83,6 +83,9 @@ enum Replay {
                 announcedLiveText = ""
                 return []
             }
+            // A command that has printed nothing yet leaves the line it was typed on as the
+            // nearest thing on screen. It is shown, but it is the user's own typing coming back.
+            guard !update.liveTextIsUserEcho else { return [] }
             let question = update.liveText.trimmingCharacters(in: .whitespaces)
             guard !question.isEmpty, question != announcedLiveText else { return [] }
             announcedLiveText = question
