@@ -32,8 +32,7 @@ final class MainViewController: NSViewController,
     private var news = LineNews()
     /// Where the echo of the most recently submitted command starts. Command-1 lands here.
     private var lastCommandOffset: Int?
-    /// The command just sent, until its echo has been seen and left unannounced. Only used
-    /// when the shell is not marking its commands: see dropEcho.
+    /// The command just sent, until its echo has been seen and left unannounced. See dropEcho.
     private var pendingEcho: String?
 
     private var liveText = ""
@@ -519,26 +518,52 @@ final class MainViewController: NSViewController,
         if !alreadySpoken.isEmpty {
             lines.removeAll { $0.trimmingCharacters(in: .whitespaces) == alreadySpoken }
         }
-        dropEcho(from: &lines)
+        dropEcho(from: &lines, in: update)
         // The hint about what Return alone does goes on here, after the checks above have
         // matched a committed line against text it repeats: both are still verbatim.
         announcer.enqueue((lines + extra).map(PromptDefault.spoken))
     }
 
-    /// Drops the echo of the command just sent, for a shell that does not mark its commands.
-    /// Where the markers are there, the session says which lines the echo landed on and
-    /// LineNews has already left them out; with no B and C to bracket it, all that identifies
-    /// the echo is that it is the text that was just sent. It comes back exactly once, right
-    /// after the command goes, so it is matched once and forgotten: a line that repeats the
-    /// command later is something a program printed, and is news.
-    private func dropEcho(from lines: inout [String]) {
-        guard !session.hasCommandMarkers, let echo = pendingEcho,
-              let index = lines.firstIndex(where: {
-                  $0.trimmingCharacters(in: .whitespaces) == echo
-              }) else { return }
+    /// Drops the echo of the command just sent, wherever the markers did not already catch it.
+    ///
+    /// B and C bracket what is typed at the shell's own prompt, and nothing else: a program
+    /// that runs a prompt of its own -- a REPL, `cat`, a session inside the terminal -- gets
+    /// no markers, and neither does a shell too old to send them. What is typed there is
+    /// echoed back and becomes a committed line like any other, and the only thing that
+    /// identifies it is that it is the text that was just sent.
+    ///
+    /// It comes back exactly once, right after the command goes, so it is matched once and
+    /// forgotten: a line that repeats the command later is something a program printed, and
+    /// is news.
+    private func dropEcho(from lines: inout [String], in update: TerminalUpdate) {
+        guard let echo = pendingEcho else { return }
+        // The markers found it, so there is nothing left to match. Disarming here matters:
+        // a fallback left armed for the rest of the command would go off on some later line
+        // of output that happens to say the same thing.
+        guard update.userEchoLines.isEmpty else {
+            pendingEcho = nil
+            return
+        }
+        guard let index = lines.firstIndex(where: { isEcho($0, of: echo) }) else { return }
         lines.remove(at: index)
         pendingEcho = nil
     }
+
+    /// Whether a committed line is `command` coming back: the command on its own, or a prompt
+    /// with the command typed on the end of it. The prompt has to end the way prompts do -- a
+    /// "%", "$", ">" and so on, then a space -- so that a line of output merely ending in the
+    /// same word is not mistaken for it.
+    private func isEcho(_ line: String, of command: String) -> Bool {
+        let text = line.trimmingCharacters(in: .whitespaces)
+        if text == command { return true }
+        guard text.hasSuffix(command) else { return false }
+        let prompt = text.dropLast(command.count)
+        guard prompt.hasSuffix(" "), let end = prompt.dropLast().last else { return false }
+        return MainViewController.promptEndings.contains(end)
+    }
+
+    /// What the last character of a prompt is, before the space the command is typed after.
+    private static let promptEndings: Set<Character> = ["%", "$", "#", ">", ":", "\u{276f}"]
 
     /// A program's question, when this batch brought a new one.
     ///

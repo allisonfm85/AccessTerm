@@ -298,9 +298,11 @@ one thing for them to work on.
 - The command coming back is not spoken. A shell prints what you typed back at you, and that
   echo becomes a transcript line like any other -- but you typed it a moment ago, so hearing it
   read out says nothing you did not already know. The markers say where it is: everything
-  between the end of the prompt and the command starting to run is your own typing. Without
-  markers, a line that is exactly what was just sent is skipped once, which is how often the
-  echo appears. It is only the announcement that is suppressed: the line is in the transcript,
+  between the end of the prompt and the command starting to run is your own typing. The markers
+  only bracket what is typed at the shell's own prompt, so anywhere they do not reach -- a
+  program running a prompt of its own, a shell too old to send them -- a line that is what was
+  just sent, on its own or typed on the end of a prompt, is skipped once, which is how often
+  the echo appears. It is only the announcement that is suppressed: the line is in the transcript,
   it is read when you arrow onto it, it is copied, and Command-1 still speaks it, because
   landing on the last command is something you asked for.
 - Moving the caret in the transcript is read by VoiceOver itself, exactly as in any text area:
