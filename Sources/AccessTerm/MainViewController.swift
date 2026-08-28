@@ -34,6 +34,9 @@ final class MainViewController: NSViewController,
     private var lastCommandOffset: Int?
     /// The command just sent, until its echo has been seen and left unannounced. See dropEcho.
     private var pendingEcho: String?
+    /// Diagnostic only: ACCESSTERM_ECHO_DEBUG puts one line on stderr per committed line,
+    /// saying how it was classified and whether it was announced. See logEchoDecisions.
+    private let echoDebug = ProcessInfo.processInfo.environment["ACCESSTERM_ECHO_DEBUG"] != nil
 
     private var liveText = ""
     /// The last live line spoken as a program's question, so it is not said again when it
@@ -515,13 +518,85 @@ final class MainViewController: NSViewController,
     /// Speaks what is new in a batch, plus anything the app has to add itself.
     private func announce(_ update: TerminalUpdate, extra: [String], alreadySpoken: String) {
         var lines = news.news(in: update)
+        let afterNews = lines
         if !alreadySpoken.isEmpty {
             lines.removeAll { $0.trimmingCharacters(in: .whitespaces) == alreadySpoken }
         }
+        let afterAlreadySpoken = lines
+        let comparedAgainst = pendingEcho
         dropEcho(from: &lines, in: update)
+        if echoDebug {
+            logEchoDecisions(update, afterNews: afterNews, afterAlreadySpoken: afterAlreadySpoken,
+                             afterDropEcho: lines, comparedAgainst: comparedAgainst, extra: extra)
+        }
         // The hint about what Return alone does goes on here, after the checks above have
         // matched a committed line against text it repeats: both are still verbatim.
         announcer.enqueue((lines + extra).map(PromptDefault.spoken))
+    }
+
+    /// Diagnostic only: says, for every line this batch committed, how it was classified and
+    /// whether it ended up being announced. It reads the decisions the code above already
+    /// made -- the three arrays are that code's own output at each step -- and makes none of
+    /// its own, so turning it on cannot change what is spoken.
+    private func logEchoDecisions(_ update: TerminalUpdate,
+                                  afterNews: [String],
+                                  afterAlreadySpoken: [String],
+                                  afterDropEcho: [String],
+                                  comparedAgainst: String?,
+                                  extra: [String]) {
+        // The lines this batch touched, in the order LineNews considers them.
+        var byLine: [Int: String] = [:]
+        for edit in update.edits { byLine[edit.line] = edit.text }
+        for (index, text) in update.newLines.enumerated() {
+            byLine[update.firstNewLine + index] = text
+        }
+        // Walked in the same order, so each stage's survivors can be consumed off the front.
+        var news = afterNews[...]
+        var kept = afterAlreadySpoken[...]
+        var spoken = afterDropEcho[...]
+
+        var out = ""
+        for line in byLine.keys.sorted() {
+            guard let text = byLine[line] else { continue }
+            let span = session.echoSpan(forLine: line)
+            var announce = false
+            var reason: String
+            if text.trimmingCharacters(in: .whitespaces).isEmpty {
+                reason = "blank"
+            } else if update.userEchoLines.contains(line) {
+                reason = "inside the marked B..C echo span"
+            } else if news.first != text {
+                reason = "same text last announced for this line"
+            } else {
+                news = news.dropFirst()
+                if kept.first != text {
+                    reason = "already spoken as the live question"
+                } else {
+                    kept = kept.dropFirst()
+                    if spoken.first != text {
+                        reason = "matched the command just sent"
+                    } else {
+                        spoken = spoken.dropFirst()
+                        announce = true
+                        reason = "news"
+                    }
+                }
+            }
+            let spanText = span.map {
+                "\($0.start)..<\($0.end) command=\"\($0.command)\" C\($0.cResolved ? "" : " un")resolved"
+            } ?? "none"
+            out += "line \(line) text=\"\(text)\"\n"
+                + "  markers=\(session.hasCommandMarkers) span=\(spanText) "
+                + "inSpan=\(span != nil) userEcho=\(update.userEchoLines.contains(line)) "
+                + "submitted=\(comparedAgainst.map { "\"\($0)\"" } ?? "none")\n"
+                + "  announce=\(announce) reason=\(reason)\n"
+        }
+        if !extra.isEmpty {
+            out += "  not a committed line, announced alongside them: \(extra)\n"
+        }
+        if !out.isEmpty {
+            FileHandle.standardError.write(Data(out.utf8))
+        }
     }
 
     /// Drops the echo of the command just sent, wherever the markers did not already catch it.

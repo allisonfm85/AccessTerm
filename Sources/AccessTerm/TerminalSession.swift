@@ -514,6 +514,19 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         pendingTurnStarts = max(0, pendingTurnStarts - 1)
     }
 
+    /// Diagnostic only, for ACCESSTERM_ECHO_DEBUG: the B..C span a transcript line falls in,
+    /// as the markers described it. Reports what was decided elsewhere and decides nothing.
+    func echoSpan(forLine line: Int) -> (start: Int, end: Int, command: String, cResolved: Bool)? {
+        for block in rawBlocks {
+            guard let start = block.commandLine else { continue }
+            let end = max(start + 1, block.outputStart ?? start + 1)
+            if (start..<end).contains(line) {
+                return (start, end, block.command, block.outputStart != nil)
+            }
+        }
+        return nil
+    }
+
     /// Whether the shell is reporting command boundaries at all.
     var hasCommandMarkers: Bool { !rawBlocks.isEmpty }
 
