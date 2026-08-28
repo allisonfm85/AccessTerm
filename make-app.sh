@@ -4,6 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+source "scripts/prepare-toolchain.sh"
 swift build -c release
 
 APP="build/AccessTerm.app"

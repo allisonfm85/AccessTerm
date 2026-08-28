@@ -32,25 +32,20 @@ the source code to your Mac and run one command that turns it into a working pro
 "Building" (or "compiling") just means that translation step. You only have to do it once, and
 you do not need to know anything about the code to do it.
 
-The whole process is: install Apple's developer tools, download the code, run one command.
+The whole process is: install Xcode, download the code, run one command.
 Expect ten minutes the first time, most of it spent waiting.
 
-### Before you start: install Apple's developer tools
+### Before you start: install Xcode
 
-Building needs Swift, Apple's programming language, which comes with a free Apple download
-called the Command Line Tools. If you already have Xcode installed, you already have this and
-can skip ahead.
+Building needs Swift and Apple's Metal compiler. Install the free Xcode app from the Mac App
+Store or Apple Developer website. The smaller standalone Command Line Tools package is not
+enough: SwiftTerm includes a Metal shader, while Apple distributes the Metal Toolchain as an
+optional Xcode component.
 
-1. Open the Terminal app (press Command-Space, type `Terminal`, press Return).
-2. Type this and press Return:
-
-   ```
-   xcode-select --install
-   ```
-
-3. If a dialog appears offering to install the tools, choose Install and wait for it to
-   finish. It is a large download.
-4. If instead you see a message saying the tools are already installed, you are ready.
+Open Xcode once after installing it and allow it to install required components. AccessTerm's
+build scripts select `/Applications/Xcode.app` for this build without changing your system-wide
+developer-tool setting. If Xcode's Metal Toolchain component is missing, the scripts ask Xcode
+to download the matching component automatically.
 
 ### Step 1: get the code onto your Mac
 
@@ -87,7 +82,7 @@ There are two ways to do this. Both build the same program.
 **The quick way -- try it now.** Type:
 
 ```
-swift run
+./run.sh
 ```
 
 This compiles the app and launches it as soon as it is ready. The first run has to download
@@ -125,8 +120,9 @@ run. Xcode downloads SwiftTerm on its own the first time.
 
 | What you see | What it means | What to do |
 | --- | --- | --- |
-| `swift: command not found` | The developer tools are not installed | Run `xcode-select --install` (see above) |
-| An error about `xcrun` or a missing developer directory | Same thing, or Xcode is not selected | Run `xcode-select --install`; if Xcode is installed, run `sudo xcode-select -s /Applications/Xcode.app` |
+| `swift: command not found` | Xcode is not installed | Install and open Xcode once (see above) |
+| An error about `xcrun`, incompatible Swift/SDK versions, or a missing developer directory | Standalone or partially updated Command Line Tools are selected | Use `./run.sh` or `./make-app.sh`; they select the complete Xcode toolchain for the build |
+| `unable to spawn process 'metal'` | Xcode's optional Metal Toolchain is missing | Use one of the included build scripts; it downloads the matching component. You can also install it in Xcode > Settings > Components |
 | `No such file or directory` after `cd` | Terminal is not in the AccessTerm folder | Check the path; drag the folder onto the Terminal window to fill it in |
 | The build stops with a network or "failed to clone" error | It could not fetch SwiftTerm | Check your internet connection and run the command again |
 | `permission denied: ./make-app.sh` | The script is not marked runnable | Run `chmod +x make-app.sh`, then try again |
