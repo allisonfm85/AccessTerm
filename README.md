@@ -429,6 +429,14 @@ The read appears to come from a path that consults none of those. This is parked
 high-priority announcement of the landing line is the workaround, and everything else is back
 to being an ordinary text area, which is what VoiceOver navigates best.
 
+The read that comes with the *selection* changing is a different one, and that one is dealt
+with. Landing the caret used to post selected-text-changed, which asks VoiceOver to read the
+landing line, and then talk over it with the announcement a tenth of a second later -- you
+heard a syllable of the line and then the command. The notification is no longer posted when
+there is something to announce, and the view reports nothing readable until the announcement
+goes out, so the announcement is the only voice. Unlike the focus read, this path does consult
+the attributes the view reports.
+
 ## Milestones
 
 1. **Done** — PTY, headless VT engine, accessible transcript, command field, announcements.

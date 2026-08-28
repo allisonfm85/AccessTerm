@@ -8,11 +8,16 @@ import AppKit
 /// static text, or narrowing what its accessibility attributes report, buys quiet at the cost
 /// of that native reading, so none of it is done here.
 ///
-/// The one thing a transcript needs beyond that is a way to stop VoiceOver reading the whole
-/// scrollback out when the view takes focus. Overriding the attributes it reads from did not
-/// stop it, so that is handled where the contents themselves can be controlled: see
-/// MainViewController's landCaret, which focuses the view with nothing in it but the line
-/// being landed on.
+/// The one thing a transcript needs beyond that is a way to stop VoiceOver reading a line out
+/// at the same moment the app is announcing it. Landing the caret on a command is announced
+/// deliberately, in words the app chooses -- the command on its own, without the prompt it was
+/// typed behind -- and a native read of the whole landing line on top of that is the same thing
+/// said twice, in two voices. `beQuiet` is how the landing keeps the second one out: while it
+/// is in force the view reports nothing readable, so a selection change made during a landing
+/// has no text to be read from. See MainViewController's landCaret.
+///
+/// It does not touch the read that comes with focus arriving, which is a path of its own and
+/// consults none of this: see "Known issues" in the README.
 final class TranscriptTextView: NSTextView, NSTextViewDelegate {
 
     /// Whether the view speaks caret movement and selection changes itself instead of leaving
@@ -29,6 +34,54 @@ final class TranscriptTextView: NSTextView, NSTextViewDelegate {
     private var lastAnnouncedSelection = NSRange(location: 0, length: 0)
     /// Set while the app moves the caret or replaces the text itself.
     private var isSuppressingSelfVoice = false
+    /// Set while a landing is in flight: see beQuiet.
+    private var isQuiet = false
+    /// Which landing the current quiet window belongs to, so that one overtaken by the next
+    /// -- the step key held down -- does not end the newer one's window when it comes to.
+    private var quietGeneration = 0
+
+    // MARK: - Quiet landings
+
+    /// Reports nothing readable until `endQuiet`, so that a selection change made while the
+    /// caret is being landed leaves VoiceOver nothing to read out. The announcement the
+    /// landing makes is then the only voice.
+    ///
+    /// Everything the text can be read from is covered together, because which of them a
+    /// read consults is not something to depend on. The window is the landing itself and
+    /// nothing more -- it ends when the announcement goes out -- so the view is never quiet
+    /// while the user is reading it.
+    @discardableResult
+    func beQuiet() -> Int {
+        isQuiet = true
+        quietGeneration += 1
+        return quietGeneration
+    }
+
+    /// Ends the window `beQuiet` opened, if a later landing has not opened one since.
+    func endQuiet(_ generation: Int) {
+        guard generation == quietGeneration else { return }
+        isQuiet = false
+    }
+
+    override func accessibilityValue() -> String? {
+        isQuiet ? "" : super.accessibilityValue()
+    }
+
+    override func accessibilitySelectedText() -> String? {
+        isQuiet ? "" : super.accessibilitySelectedText()
+    }
+
+    override func accessibilityNumberOfCharacters() -> Int {
+        isQuiet ? 0 : super.accessibilityNumberOfCharacters()
+    }
+
+    override func accessibilityString(for range: NSRange) -> String? {
+        isQuiet ? "" : super.accessibilityString(for: range)
+    }
+
+    override func accessibilityAttributedString(for range: NSRange) -> NSAttributedString? {
+        isQuiet ? NSAttributedString(string: "") : super.accessibilityAttributedString(for: range)
+    }
 
     // MARK: - The caret's line
 

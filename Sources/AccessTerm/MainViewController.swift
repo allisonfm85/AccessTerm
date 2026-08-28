@@ -237,21 +237,40 @@ final class MainViewController: NSViewController,
         }
     }
 
-    /// Move the caret, then take focus, then tell VoiceOver the selection moved, then say
-    /// the landing line.
+    /// Move the caret, take focus, and say what was landed on -- once.
     ///
-    /// The announcement is what the user actually hears the landing line from. See "Known
+    /// The announcement is the only voice here, and that takes keeping another one out.
+    /// Telling VoiceOver the selection moved asks it to read the landing line itself, and the
+    /// announcement a moment later then talks over it: what the user hears is the first
+    /// syllable of the line, cut off, and then the announcement -- two voices racing over one
+    /// landing. So the notification is not posted when there is something to announce, and
+    /// the view is kept quiet until the announcement goes out, which leaves any read AppKit
+    /// posts for the selection change with nothing to read from either.
+    ///
+    /// A landing with nothing to announce is the other way round: there the caret move is
+    /// VoiceOver's to describe, so it is told about it and the view is never quieted.
+    ///
+    /// What this does not touch is the read that comes with focus arriving. See "Known
     /// issues" in the README: VoiceOver reads the first line of the transcript as focus
-    /// arrives, whatever the caret is doing, and nothing tried so far has stopped it.
+    /// lands, whatever the caret is doing, and nothing tried so far has stopped it -- the
+    /// announcement is what is heard over that.
     private func landCaret(at offset: Int, announcing: String? = nil) {
+        let quiet = textView.beQuiet()
         moveCaret(to: offset)
         view.window?.makeFirstResponder(textView)
-        NSAccessibility.post(element: textView, notification: .selectedTextChanged)
 
         let spoken = announcing ?? textView.caretLineText
-        guard !spoken.isEmpty else { return }
+        guard !spoken.isEmpty else {
+            textView.endQuiet(quiet)
+            NSAccessibility.post(element: textView, notification: .selectedTextChanged)
+            return
+        }
+        // Long enough for the selection change to have been and gone before the view has
+        // anything to say again, and for the announcement to land after focus has settled.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            self?.announcer.announceNow(spoken, priority: .high)
+            guard let self else { return }
+            self.textView.endQuiet(quiet)
+            self.announcer.announceNow(spoken, priority: .high)
         }
     }
 
