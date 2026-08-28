@@ -5,8 +5,8 @@ AccessTerm is a macOS terminal built for VoiceOver users.
 A normal terminal is one big text area that VoiceOver has to "interact with" before it can
 read anything, and everything -- what you typed and what the computer printed -- lives in that
 one area together. AccessTerm splits it up: output is a plain, read-only list of lines you can
-arrow through, and there is a separate ordinary text field for typing. Both are standard macOS
-controls, so VoiceOver reads them the way it reads any list or text field.
+arrow through, and there is a separate line at the bottom for typing. The output list is a
+standard macOS control, so VoiceOver reads it the way it reads any list.
 
 It needs macOS 13 (Ventura) or later.
 
@@ -152,8 +152,12 @@ anywhere in the window.
    yet: usually the shell prompt, a half-printed line, or a progress indicator. When the cursor
    is sitting on a blank row underneath something a program has just drawn, this shows the last
    line of that drawing rather than nothing.
-3. **Command line** (labeled "Command line"). An ordinary text field. Press Return to send
-   what you have typed.
+3. **Command line** (labeled "Command line"). Where what you type appears. Press Return to
+   send it. It is deliberately not a text field: a field is narrated by the system on its own
+   terms, and emptying one on Return is described as a deletion -- which means the command
+   read back at you a moment after you typed it. This is a plain view instead, so nothing is
+   said that the app did not choose to say. What that costs is a caret: editing is typing and
+   Backspace, and the shell does the rest (see below).
 
 ## Keyboard shortcuts
 
@@ -206,13 +210,20 @@ work from anywhere in the window.
   treats anything over about sixty bytes as a paste -- which used to mean a long line's Return
   was read as pasted text rather than "send this", and nothing happened. When the program has
   asked for bracketed paste, the text is wrapped in the paste markers too.
-- **Up/Down**: command history, kept by the app itself so VoiceOver reads it normally.
+- **Up/Down**: the shell's own history. Anything typed and not yet sent goes to the shell
+  first, so that its line and this one do not disagree; from then on you are editing the line
+  the shell holds, which the Current line shows.
+- **Tab**: shell completion, the same way -- what you have typed goes first, so there is
+  something to complete.
+- **Left/Right**: sent to the shell, which is where the line is once anything has been sent to
+  it. There is no caret here to move.
+- **Command-V**: paste. Newlines become spaces, so a pasted command is there to look at before
+  it runs rather than running on arrival.
 - **Control-C, Control-D, Control-Z, Control-L, Escape**: sent straight to the program.
 - **Shift-Tab**: sent to the program (Claude Code uses it to cycle permission modes).
-- **Tab**: moves focus to the transcript. Shell tab-completion is not available in this mode
-  yet.
-- Other Control keys keep their usual macOS text-editing meaning (Control-A, Control-E,
-  Control-K).
+- Typing is spoken as it happens, character by character, because a view that is not a text
+  control gets none of the narration a field would and VoiceOver's own key echo is off for
+  many people. `ACCESSTERM_QUIET_TYPING=1` turns that off.
 
 The Terminal menu also has "Send Escape" and "Send Shift-Tab", for when a menu is easier than
 a key combination.
@@ -386,8 +397,10 @@ current line on standard error.
 ## Known limitations
 
 - The terminal is a fixed 160 columns by 50 rows and does not follow the window size.
-- Shell tab completion and the shell's own history editing do not work from the native command
-  field. A "direct input" mode that passes every keystroke straight through is planned.
+- The command line has no caret: editing what you have typed is Backspace, or send it to the
+  shell (Tab, an arrow key) and edit it there.
+- Accented characters typed with dead keys, and input methods that compose as you type, are not
+  supported at the command line: keys are read directly rather than through an input context.
 - After 100,000 lines, the transcript stops growing. Restart the app for now.
 
 ## Known issues

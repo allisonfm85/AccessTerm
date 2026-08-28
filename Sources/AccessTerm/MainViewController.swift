@@ -8,9 +8,11 @@ import AppKit
 ///     rewriting in place the ones whose rows a program has redrawn, without moving the caret
 ///     off the text it was on.
 ///  2. Current line: a label with whatever is not part of a line yet (usually the prompt).
-///  3. Command line: a native text field. Enter sends the line to the shell.
+///  3. Command line: a view that draws what is being typed and is read out by nothing but
+///     this app. Return sends the line to the shell. It is not a text control on purpose --
+///     see InputLineView.
 final class MainViewController: NSViewController,
-                                NSTextFieldDelegate, TerminalSessionDelegate,
+                                InputLineViewDelegate, TerminalSessionDelegate,
                                 NSMenuItemValidation {
 
     let session = TerminalSession()
@@ -19,7 +21,7 @@ final class MainViewController: NSViewController,
     private let textView = MainViewController.makeTranscriptTextView()
     private let scrollView = NSScrollView()
     private let liveLabel = NSTextField(wrappingLabelWithString: "")
-    private let commandField = NSTextField()
+    private let inputLine = InputLineView()
 
     private let monoFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
 
@@ -42,10 +44,6 @@ final class MainViewController: NSViewController,
     /// The last live line spoken as a program's question, so it is not said again when it
     /// later gains its newline and arrives as a transcript line.
     private var announcedLiveText = ""
-
-    private var history: [String] = []
-    private var historyIndex = 0
-    private var keyMonitor: Any?
 
     // MARK: - View construction
 
@@ -101,16 +99,15 @@ final class MainViewController: NSViewController,
         liveLabel.setContentHuggingPriority(.required, for: .vertical)
         liveLabel.setContentCompressionResistancePriority(.required, for: .vertical)
 
-        commandField.font = monoFont
-        commandField.placeholderString = "Type a command and press Return"
-        commandField.setAccessibilityLabel("Command line")
-        commandField.delegate = self
-        commandField.translatesAutoresizingMaskIntoConstraints = false
-        commandField.setContentHuggingPriority(.required, for: .vertical)
+        inputLine.font = monoFont
+        inputLine.placeholder = "Type a command and press Return"
+        inputLine.delegate = self
+        inputLine.translatesAutoresizingMaskIntoConstraints = false
+        inputLine.setContentHuggingPriority(.required, for: .vertical)
 
         root.addSubview(scrollView)
         root.addSubview(liveLabel)
-        root.addSubview(commandField)
+        root.addSubview(inputLine)
 
         let pad: CGFloat = 8
         NSLayoutConstraint.activate([
@@ -122,10 +119,10 @@ final class MainViewController: NSViewController,
             liveLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: pad),
             liveLabel.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -pad),
 
-            commandField.topAnchor.constraint(equalTo: liveLabel.bottomAnchor, constant: pad),
-            commandField.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: pad),
-            commandField.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -pad),
-            commandField.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -pad),
+            inputLine.topAnchor.constraint(equalTo: liveLabel.bottomAnchor, constant: pad),
+            inputLine.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: pad),
+            inputLine.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -pad),
+            inputLine.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -pad),
         ])
 
         view = root
@@ -140,130 +137,44 @@ final class MainViewController: NSViewController,
 
     override func viewDidAppear() {
         super.viewDidAppear()
-        view.window?.initialFirstResponder = commandField
-        view.window?.makeFirstResponder(commandField)
-        installKeyMonitor()
+        view.window?.initialFirstResponder = inputLine
+        view.window?.makeFirstResponder(inputLine)
     }
 
-    override func viewWillDisappear() {
-        super.viewWillDisappear()
-        if let keyMonitor {
-            NSEvent.removeMonitor(keyMonitor)
-            self.keyMonitor = nil
+    // MARK: - Input line
+
+    /// Return. The line goes to the shell as one write, and nothing says it back: the input
+    /// line emptied itself before this was called, and the echo the shell prints is
+    /// classified and left unannounced like any other.
+    func inputLine(_ view: InputLineView, didSubmit text: String) {
+        submit(text)
+    }
+
+    /// A key the shell answers for itself: history, completion, a control character. Whatever
+    /// had been typed here goes first, without a Return, so that it becomes part of the line
+    /// the shell is holding -- otherwise completion would complete nothing and history would
+    /// throw the typing away.
+    func inputLine(_ view: InputLineView, didSendToShell bytes: [UInt8], pending text: String) {
+        if !text.isEmpty {
+            lastCommandOffset = transcript.length
+            session.send(bytes: Array(text.utf8))
         }
+        session.send(bytes: bytes)
     }
 
-    // MARK: - Control keys while typing in the command field
-
-    private var isEditingCommandField: Bool {
-        guard let editor = view.window?.firstResponder as? NSTextView,
-              let editorDelegate = editor.delegate else { return false }
-        return (editorDelegate as AnyObject) === commandField
+    /// What was typed, said back as it is typed. The input line is not a text control, so the
+    /// system narrates nothing about it; this is the only thing that does.
+    func inputLineDidEdit(_ view: InputLineView, speaking text: String) {
+        announcer.announceNow(text, priority: .high)
     }
 
-    /// Control-C/D/Z/L and Escape go straight to the program instead of the text field.
-    /// Other Control combinations keep their normal text-editing meaning (Control-A, Control-E, ...).
-    private func installKeyMonitor() {
-        guard keyMonitor == nil else { return }
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window === self.view.window, self.isEditingCommandField else {
-                return event
-            }
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-
-            if flags.isEmpty, event.keyCode == 53 { // Escape
-                self.session.send(bytes: [0x1b])
-                return nil
-            }
-            if flags == [.control],
-               let ch = event.charactersIgnoringModifiers?.lowercased().first,
-               let ascii = ch.asciiValue, ch.isLetter,
-               "cdzl".contains(ch) {
-                self.session.send(bytes: [ascii - 96])
-                return nil
-            }
-            return event
-        }
-    }
-
-    // MARK: - Command field
-
-    func controlTextDidBeginEditing(_ obj: Notification) {
-        // Smart quotes and dashes would corrupt commands.
-        if let editor = commandField.currentEditor() as? NSTextView {
-            editor.isAutomaticQuoteSubstitutionEnabled = false
-            editor.isAutomaticDashSubstitutionEnabled = false
-            editor.isAutomaticTextReplacementEnabled = false
-            editor.isAutomaticSpellingCorrectionEnabled = false
-            editor.isContinuousSpellCheckingEnabled = false
-        }
-    }
-
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        switch selector {
-        case #selector(NSResponder.insertNewline(_:)):
-            submitCommand()
-            return true
-        case #selector(NSResponder.moveUp(_:)):
-            stepHistory(-1)
-            return true
-        case #selector(NSResponder.moveDown(_:)):
-            stepHistory(1)
-            return true
-        case #selector(NSResponder.insertBacktab(_:)):
-            // Shift-Tab: Claude Code cycles permission modes with it.
-            session.send(bytes: [0x1b, 0x5b, 0x5a])
-            return true
-        default:
-            return false
-        }
-    }
-
-    private func submitCommand() {
-        let text = commandField.stringValue
+    private func submit(_ text: String) {
         // The shell echoes the command, so the transcript's current end is where that echo
         // will land: the top of everything this command is about to produce.
         lastCommandOffset = transcript.length
         let typed = text.trimmingCharacters(in: .whitespaces)
         pendingEcho = typed.isEmpty ? nil : typed
         session.send(text: text + "\r")
-        if !text.isEmpty {
-            if history.last != text { history.append(text) }
-        }
-        historyIndex = history.count
-        clearCommandField()
-    }
-
-    /// Empties the command field without the command being read back.
-    ///
-    /// Setting `stringValue` on a field that is being edited replaces what is in the field
-    /// editor, and a screen reader describes that the way it describes any other deletion: by
-    /// reading out the text that has just gone. Pressing Return would then say the command
-    /// back, a moment after it was typed -- the same thing the echoed transcript line was
-    /// suppressed for.
-    ///
-    /// So the field editor is emptied first, by writing to its storage rather than editing
-    /// through it: a storage assignment does not go through `didChangeText`, which is what
-    /// reports an edit. Setting the field's own value afterwards is what keeps the cell in
-    /// step -- it is the value everything else reads -- and by then the editor is already
-    /// empty, so there is no deletion left in it to describe. A field that is not being
-    /// edited has no editor and needs only the second half.
-    private func clearCommandField() {
-        if let editor = commandField.currentEditor() as? NSTextView,
-           let storage = editor.textStorage {
-            storage.setAttributedString(NSAttributedString(string: "",
-                                                           attributes: editor.typingAttributes))
-            editor.setSelectedRange(NSRange(location: 0, length: 0))
-        }
-        commandField.stringValue = ""
-    }
-
-    private func stepHistory(_ delta: Int) {
-        guard !history.isEmpty else { return }
-        historyIndex = max(0, min(history.count, historyIndex + delta))
-        commandField.stringValue = historyIndex == history.count ? "" : history[historyIndex]
-        let length = (commandField.stringValue as NSString).length
-        commandField.currentEditor()?.selectedRange = NSRange(location: length, length: 0)
     }
 
     // MARK: - Transcript text
@@ -746,7 +657,7 @@ final class MainViewController: NSViewController,
         let message = "[Shell exited" + (code.map { " with code \($0)" } ?? "") + "]"
         appendExternal([message])
         liveLabel.stringValue = message
-        commandField.isEnabled = false
+        inputLine.isEnabled = false
         announcer.announceNow(message)
     }
 
@@ -768,7 +679,7 @@ final class MainViewController: NSViewController,
     }
 
     @objc func focusCommandLine(_ sender: Any?) {
-        view.window?.makeFirstResponder(commandField)
+        view.window?.makeFirstResponder(inputLine)
     }
 
     @objc func goToEnd(_ sender: Any?) {
