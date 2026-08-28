@@ -231,6 +231,30 @@ final class MainViewController: NSViewController,
             if history.last != text { history.append(text) }
         }
         historyIndex = history.count
+        clearCommandField()
+    }
+
+    /// Empties the command field without the command being read back.
+    ///
+    /// Setting `stringValue` on a field that is being edited replaces what is in the field
+    /// editor, and a screen reader describes that the way it describes any other deletion: by
+    /// reading out the text that has just gone. Pressing Return would then say the command
+    /// back, a moment after it was typed -- the same thing the echoed transcript line was
+    /// suppressed for.
+    ///
+    /// So the field editor is emptied first, by writing to its storage rather than editing
+    /// through it: a storage assignment does not go through `didChangeText`, which is what
+    /// reports an edit. Setting the field's own value afterwards is what keeps the cell in
+    /// step -- it is the value everything else reads -- and by then the editor is already
+    /// empty, so there is no deletion left in it to describe. A field that is not being
+    /// edited has no editor and needs only the second half.
+    private func clearCommandField() {
+        if let editor = commandField.currentEditor() as? NSTextView,
+           let storage = editor.textStorage {
+            storage.setAttributedString(NSAttributedString(string: "",
+                                                           attributes: editor.typingAttributes))
+            editor.setSelectedRange(NSRange(location: 0, length: 0))
+        }
         commandField.stringValue = ""
     }
 
