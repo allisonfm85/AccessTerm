@@ -215,15 +215,20 @@ work from anywhere in the window.
   the shell holds, which the Current line shows.
 - **Tab**: shell completion, the same way -- what you have typed goes first, so there is
   something to complete.
-- **Left/Right**: sent to the shell, which is where the line is once anything has been sent to
-  it. There is no caret here to move.
+- **Left/Right**: move the caret one character, and the character you moved over is read out.
+  **Option-Left/Right**: one word, and the word is read out -- a word here is a run of
+  anything that is not a space, so a path or a flag is one word. **Home/End**, or
+  **Command-Left/Right**: the start and end of the line. At either end, it says which end you
+  are at rather than going quiet.
+- **Backspace** deletes the character before the caret and says what it was. **Forward
+  Delete** takes the one after it. Typing anywhere in the line inserts at the caret.
 - **Command-V**: paste. Newlines become spaces, so a pasted command is there to look at before
   it runs rather than running on arrival.
 - **Control-C, Control-D, Control-Z, Control-L, Escape**: sent straight to the program.
 - **Shift-Tab**: sent to the program (Claude Code uses it to cycle permission modes).
-- Typing is spoken as it happens, character by character, because a view that is not a text
-  control gets none of the narration a field would and VoiceOver's own key echo is off for
-  many people. `ACCESSTERM_QUIET_TYPING=1` turns that off.
+- Typing itself is silent. Whether keystrokes are spoken is VoiceOver's own key echo setting,
+  and the app does not answer that question on your behalf; the caret keys above are how you
+  read back what you have typed before sending it.
 
 The Terminal menu also has "Send Escape" and "Send Shift-Tab", for when a menu is easier than
 a key combination.
@@ -397,8 +402,6 @@ current line on standard error.
 ## Known limitations
 
 - The terminal is a fixed 160 columns by 50 rows and does not follow the window size.
-- The command line has no caret: editing what you have typed is Backspace, or send it to the
-  shell (Tab, an arrow key) and edit it there.
 - Accented characters typed with dead keys, and input methods that compose as you type, are not
   supported at the command line: keys are read directly rather than through an input context.
 - After 100,000 lines, the transcript stops growing. Restart the app for now.

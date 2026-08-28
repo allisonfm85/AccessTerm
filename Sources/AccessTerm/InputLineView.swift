@@ -7,54 +7,44 @@ protocol InputLineViewDelegate: AnyObject {
     /// character. `text` is whatever had been typed and not yet sent, for the delegate to
     /// flush first so that the shell's line and this one do not disagree.
     func inputLine(_ view: InputLineView, didSendToShell bytes: [UInt8], pending text: String)
-    /// A character was typed or deleted, for the delegate to say if it says such things.
-    func inputLineDidEdit(_ view: InputLineView, speaking text: String)
+    /// Something for the screen reader to say: the character the caret crossed, the word it
+    /// crossed, what a deletion removed. Typing itself says nothing.
+    func inputLine(_ view: InputLineView, announce text: String)
 }
 
-/// The command line: a view that is drawn and read, and never edited.
+/// The command line: a view that is drawn and read, and never edited by the system.
 ///
 /// It is deliberately not a text control. An editable field is narrated by the system on its
 /// own terms: the field editor reports every change it makes, and emptying it on Return is
 /// reported as a deletion, which a screen reader describes by reading out the text that has
 /// just gone -- the command said back a moment after it was typed. None of that is ours to
 /// switch off from outside, so there is nothing here for it to happen to. This view keeps the
-/// string, draws it, and tells VoiceOver what it says through a label it is told to update.
-/// Nothing here posts a value change, and nothing here is editable as far as the system is
-/// concerned.
+/// string and the caret, draws them, and reports the string to VoiceOver as the value of a
+/// piece of static text. Nothing here posts a value change.
 ///
-/// What that costs is what a field editor was doing: there is no caret to move, so editing is
-/// typing and Backspace. Text is committed as a whole line, so the shell has not seen a
-/// character of it until then -- anything the shell has to answer for itself, completion and
-/// history among them, is sent through the delegate, which flushes what is pending first.
+/// What a field editor was also doing was letting someone read back what they had typed, and
+/// that has to be replaced rather than dropped: the caret moves by character and by word, and
+/// this view says what it crossed. Typing is silent, because VoiceOver's key echo is the
+/// setting that decides whether typing is spoken, and it is not this app's to override.
+///
+/// The shell has not seen a character of the line until Return, so anything the shell answers
+/// for itself -- completion, its own history -- is sent through the delegate, which flushes
+/// what is pending first.
 final class InputLineView: NSView {
 
     weak var delegate: InputLineViewDelegate?
 
-    /// Whether the view says what is typed into it. VoiceOver's own key echo is off for many
-    /// people, and a view that is not a text control gets none of the narration a field would:
-    /// without this, typing is silent. On, each character and each deletion is spoken as it
-    /// happens.
-    /// ACCESSTERM_QUIET_TYPING turns it off without a rebuild, for comparing the two against a
-    /// screen reader.
-    static var speaksTyping = ProcessInfo.processInfo.environment["ACCESSTERM_QUIET_TYPING"] == nil
-
     /// Whether keys are taken at all. Off once the shell has exited.
     var isEnabled = true
 
-    /// What has been typed and not yet sent. Setting it redraws and re-labels, and announces
-    /// nothing: what to say about a change is the delegate's business, and submitting says
-    /// nothing at all.
-    private(set) var text = "" {
-        didSet {
-            guard text != oldValue else { return }
-            needsDisplay = true
-            updateAccessibilityLabel()
-        }
-    }
+    /// What has been typed and not yet sent.
+    private(set) var text = "" { didSet { refresh(oldValue != text) } }
 
-    var placeholder = "" {
-        didSet { needsDisplay = true; updateAccessibilityLabel() }
-    }
+    /// Where the next character goes, counted in characters from the start. Everything that
+    /// moves it says what it crossed; nothing else here speaks.
+    private(set) var caret = 0 { didSet { needsDisplay = true } }
+
+    var placeholder = "" { didSet { needsDisplay = true } }
 
     var font: NSFont = .monospacedSystemFont(ofSize: 13, weight: .regular) {
         didSet { invalidateIntrinsicContentSize(); needsDisplay = true }
@@ -65,10 +55,11 @@ final class InputLineView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         setAccessibilityElement(true)
-        // Static text, not a text field: nothing about this reports an editable value, and
-        // nothing posts one changing.
+        // Static text, not a text field: nothing here reports an editable value, and nothing
+        // posts one changing.
         setAccessibilityRole(.staticText)
-        updateAccessibilityLabel()
+        setAccessibilityLabel("Command line")
+        refresh(true)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -79,10 +70,19 @@ final class InputLineView: NSView {
     /// whole reason the input is not a field.
     func clear() {
         text = ""
+        caret = 0
     }
 
-    private func updateAccessibilityLabel() {
-        setAccessibilityLabel(text.isEmpty ? "Command line, empty" : "Command line, \(text)")
+    private func refresh(_ changed: Bool) {
+        guard changed else { return }
+        caret = min(caret, text.count)
+        needsDisplay = true
+        setAccessibilityValue(text)
+    }
+
+    /// The string index `offset` characters in, clamped.
+    private func index(_ offset: Int) -> String.Index {
+        text.index(text.startIndex, offsetBy: max(0, min(offset, text.count)))
     }
 
     // MARK: - Drawing
@@ -108,14 +108,13 @@ final class InputLineView: NSView {
         let origin = NSPoint(x: padding.width, y: padding.height)
         (showing as NSString).draw(at: origin, withAttributes: attributes)
 
-        // A caret, so that someone watching can see where typing goes. It sits after the text
-        // because that is the only place typing can go: there is no caret to move.
         guard window?.firstResponder === self else { return }
-        let width = text.isEmpty ? 0 : (text as NSString).size(withAttributes: attributes).width
-        let caret = NSRect(x: origin.x + width, y: origin.y,
-                           width: 1, height: ceil(font.ascender - font.descender))
+        let before = String(text[text.startIndex..<index(caret)])
+        let width = before.isEmpty ? 0 : (before as NSString).size(withAttributes: attributes).width
+        let bar = NSRect(x: origin.x + width, y: origin.y,
+                         width: 1, height: ceil(font.ascender - font.descender))
         NSColor.textColor.setFill()
-        caret.fill()
+        bar.fill()
     }
 
     // MARK: - Focus
@@ -129,12 +128,14 @@ final class InputLineView: NSView {
 
     // MARK: - Keys
 
-    /// The keys the shell owns. Everything else is text, or Backspace, or Return.
-    private static let escape: UInt16 = 53
-    private static let delete: UInt16 = 51
     private static let returnKey: UInt16 = 36
     private static let enterKey: UInt16 = 76
+    private static let deleteKey: UInt16 = 51
+    private static let forwardDelete: UInt16 = 117
+    private static let escape: UInt16 = 53
     private static let tab: UInt16 = 48
+    private static let home: UInt16 = 115
+    private static let end: UInt16 = 119
     private static let up: UInt16 = 126
     private static let down: UInt16 = 125
     private static let left: UInt16 = 123
@@ -144,10 +145,14 @@ final class InputLineView: NSView {
         guard isEnabled else { return }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 
-        // Command combinations are menu business, and Control combinations other than the ones
-        // below keep whatever meaning the responder chain gives them.
+        // Command-Left and Command-Right are the ends of the line. Every other Command
+        // combination is the menu's business.
         if flags.contains(.command) {
-            super.keyDown(with: event)
+            switch event.keyCode {
+            case InputLineView.left: moveCaret(to: 0)
+            case InputLineView.right: moveCaret(to: text.count)
+            default: super.keyDown(with: event)
+            }
             return
         }
 
@@ -164,8 +169,22 @@ final class InputLineView: NSView {
             // Emptied first, and in silence, so that nothing can describe what was there.
             clear()
             delegate?.inputLine(self, didSubmit: submitted)
-        case InputLineView.delete:
+        case InputLineView.deleteKey:
             deleteBackward()
+        case InputLineView.forwardDelete:
+            deleteForward()
+        case InputLineView.left where flags.contains(.option):
+            moveCaret(to: wordStart(before: caret))
+        case InputLineView.right where flags.contains(.option):
+            moveCaret(to: wordEnd(after: caret))
+        case InputLineView.left:
+            moveCaret(to: caret - 1)
+        case InputLineView.right:
+            moveCaret(to: caret + 1)
+        case InputLineView.home:
+            moveCaret(to: 0)
+        case InputLineView.end:
+            moveCaret(to: text.count)
         case InputLineView.escape:
             sendToShell([0x1b])
         case InputLineView.tab where flags.contains(.shift):
@@ -176,17 +195,16 @@ final class InputLineView: NSView {
             sendToShell([0x1b, 0x5b, 0x41])
         case InputLineView.down:
             sendToShell([0x1b, 0x5b, 0x42])
-        case InputLineView.left:
-            sendToShell([0x1b, 0x5b, 0x44])
-        case InputLineView.right:
-            sendToShell([0x1b, 0x5b, 0x43])
         default:
             insert(event.characters ?? "")
         }
     }
 
-    /// Text that is not a control character. Anything else -- a function key, a dead key on its
-    /// own -- is not something to type.
+    // MARK: - Editing
+
+    /// Text that is not a control character, put in at the caret. Silent: whether typing is
+    /// spoken is VoiceOver's key echo setting, and this app does not answer that question for
+    /// anyone.
     private func insert(_ characters: String) {
         let typed = characters.filter { character in
             character.unicodeScalars.allSatisfy { scalar in
@@ -197,19 +215,82 @@ final class InputLineView: NSView {
             }
         }
         guard !typed.isEmpty else { return }
-        text += typed
-        speak(typed)
+        let at = caret
+        text.insert(contentsOf: typed, at: index(at))
+        caret = at + typed.count
     }
 
     private func deleteBackward() {
-        guard let last = text.last else { return }
-        text.removeLast()
-        speak(String(last) + " deleted")
+        guard caret > 0 else { return }
+        let position = index(caret - 1)
+        let removed = text[position]
+        let target = caret - 1
+        text.remove(at: position)
+        // Set rather than decrement: losing a character has already pulled the caret in by
+        // one, and stepping back again from there would skip a character.
+        caret = target
+        announce(describing(String(removed)) + " deleted")
     }
 
-    private func speak(_ what: String) {
-        guard InputLineView.speaksTyping else { return }
-        delegate?.inputLineDidEdit(self, speaking: what)
+    private func deleteForward() {
+        guard caret < text.count else { return }
+        let position = index(caret)
+        let removed = text[position]
+        text.remove(at: position)
+        announce(describing(String(removed)) + " deleted")
+    }
+
+    // MARK: - Moving the caret
+
+    /// Moves the caret and says what it crossed, which for one step is the character stepped
+    /// over and for a word step is the word. A move that cannot happen says where it already
+    /// is, rather than sounding like a key that did nothing.
+    private func moveCaret(to position: Int) {
+        let target = max(0, min(position, text.count))
+        guard target != caret else {
+            if text.isEmpty {
+                announce("empty")
+            } else {
+                announce(caret == 0 ? "start of line" : "end of line")
+            }
+            return
+        }
+        let crossed = String(text[index(min(caret, target))..<index(max(caret, target))])
+        caret = target
+        announce(describing(crossed))
+    }
+
+    /// How a stretch of text is said. Whitespace has to be named or it sounds like nothing was
+    /// crossed at all, and a long jump is counted rather than recited.
+    private func describing(_ crossed: String) -> String {
+        if crossed.isEmpty { return "" }
+        if crossed.count > 60 { return "\(crossed.count) characters" }
+        guard crossed.trimmingCharacters(in: .whitespaces).isEmpty else { return crossed }
+        return crossed.count == 1 ? "space" : "\(crossed.count) spaces"
+    }
+
+    /// Start of the word to the left of `offset`: back over any spaces, then over the word.
+    /// A word is a run of anything that is not a space, so a path or a flag is one word.
+    private func wordStart(before offset: Int) -> Int {
+        let characters = Array(text)
+        var position = max(0, min(offset, characters.count))
+        while position > 0, characters[position - 1].isWhitespace { position -= 1 }
+        while position > 0, !characters[position - 1].isWhitespace { position -= 1 }
+        return position
+    }
+
+    /// End of the word to the right of `offset`.
+    private func wordEnd(after offset: Int) -> Int {
+        let characters = Array(text)
+        var position = max(0, min(offset, characters.count))
+        while position < characters.count, characters[position].isWhitespace { position += 1 }
+        while position < characters.count, !characters[position].isWhitespace { position += 1 }
+        return position
+    }
+
+    private func announce(_ what: String) {
+        guard !what.isEmpty else { return }
+        delegate?.inputLine(self, announce: what)
     }
 
     /// Hands the shell a key it answers for itself, along with anything typed here that it has
@@ -229,10 +310,9 @@ final class InputLineView: NSView {
     @objc func paste(_ sender: Any?) {
         guard isEnabled,
               let pasted = NSPasteboard.general.string(forType: .string) else { return }
-        let flattened = pasted
+        insert(pasted
             .replacingOccurrences(of: "\r\n", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\r", with: " ")
-        insert(flattened)
+            .replacingOccurrences(of: "\r", with: " "))
     }
 }

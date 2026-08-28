@@ -162,9 +162,12 @@ final class MainViewController: NSViewController,
         session.send(bytes: bytes)
     }
 
-    /// What was typed, said back as it is typed. The input line is not a text control, so the
-    /// system narrates nothing about it; this is the only thing that does.
-    func inputLineDidEdit(_ view: InputLineView, speaking text: String) {
+    /// The input line's own voice: the character or word the caret crossed, what a deletion
+    /// removed. It is not a text control, so the system narrates nothing about it, and this is
+    /// the only thing that does. Typing is not among the things it says -- whether keystrokes
+    /// are spoken is VoiceOver's key echo setting, and this app does not answer that for
+    /// anyone.
+    func inputLine(_ view: InputLineView, announce text: String) {
         announcer.announceNow(text, priority: .high)
     }
 
