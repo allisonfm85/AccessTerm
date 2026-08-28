@@ -40,7 +40,8 @@ struct TerminalUpdate {
 struct CommandBlock {
     /// The prompt, ending with the line the command was typed on.
     var promptLines: Range<Int>
-    /// What was typed, read back off the command line between the B and C markers.
+    /// What was typed: the text between the B and C markers, taken off the screen at the
+    /// moment the command started running and not touched again.
     var command: String
     /// The output on its own: no prompt, no command line.
     var outputLines: Range<Int>
@@ -409,6 +410,10 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
     private struct RawBlock {
         /// Column the command starts at, which is where the prompt ended.
         var commandColumn = 0
+        /// Buffer row B left the cursor on, which is the row the command is typed on. Kept
+        /// as a row rather than as a line because the command is read off the screen while
+        /// it is still a row: see captureCommand.
+        var commandRow: Int?
         var exitCode: Int32?
         var isFinished = false
         /// Whether the command ever started running. A prompt sitting waiting for input has
@@ -586,6 +591,7 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
             if let last = rawBlocks.last, !last.didRun, !last.isFinished {
                 rawBlocks[rawBlocks.count - 1].promptLine = nil
                 rawBlocks[rawBlocks.count - 1].commandLine = nil
+                rawBlocks[rawBlocks.count - 1].commandRow = nil
             } else {
                 rawBlocks.append(RawBlock())
             }
@@ -594,13 +600,18 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
             guard !programIsRunning else { return }
             openBlock()
             rawBlocks[rawBlocks.count - 1].commandColumn = terminal.buffer.x
+            rawBlocks[rawBlocks.count - 1].commandRow = row
             anchor(.command, row: row)
         case "C":
             // Claude Code sends C and D together when a turn ends, having never used C for
             // what it means. The turn is closed by D; this one has nothing to say.
             guard !programIsRunning else { return }
             openBlock()
-            rawBlocks[rawBlocks.count - 1].didRun = true
+            let index = rawBlocks.count - 1
+            rawBlocks[index].didRun = true
+            // Before the output anchor, and before anything the command prints can be drawn:
+            // this is the moment the typed line is still on the screen and complete.
+            captureCommand(block: index, cursorRow: row)
             anchor(.outputStart, row: row)
         case "D":
             // The shell always reports an exit code with D (see ShellIntegration); a program
@@ -657,6 +668,10 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         case .outputStart: rawBlocks[block].outputStart = line
         case .outputEnd: rawBlocks[block].outputEnd = line
         }
+        // The echoed lines are the span between the command line and the output, so both
+        // anchors landing can widen it. The command itself is not read here: it was taken
+        // off the screen when the command started.
+        if anchor == .command || anchor == .outputStart { noteEcho(rawBlocks[block]) }
     }
 
     /// Turns the markers waiting on this row into transcript lines.
@@ -667,20 +682,31 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         }
     }
 
-    /// Reads command text off the lines this batch touched. It has to happen after the whole
-    /// batch, not as each row lands: a wrapped command line is not complete until the last
-    /// row of the group has been joined onto it.
-    private func readCommands(touching lines: Set<Int>) {
-        guard !lines.isEmpty else { return }
-        for index in rawBlocks.indices where rawBlocks[index].command.isEmpty {
-            guard let line = rawBlocks[index].commandLine, lines.contains(line),
-                  transcript.lines.indices.contains(line) else { continue }
-            let text = Array(transcript.lines[line])
-            let column = min(rawBlocks[index].commandColumn, text.count)
-            rawBlocks[index].command = String(text[column...])
-                .trimmingCharacters(in: .whitespaces)
-            noteEcho(rawBlocks[index])
-        }
+    /// Takes the block's command off the screen, at the moment the command starts running.
+    ///
+    /// C comes from preexec, which is the one instant the typed line is both complete and
+    /// still the only thing on those rows: the shell has echoed all of it, and nothing the
+    /// command prints has been drawn over it yet. Reading it later -- off the transcript
+    /// line, whenever that line is next touched -- reads whatever is on that line by then,
+    /// and a program that repaints the rows above it makes that somebody else's text.
+    ///
+    /// The command runs from where B left the cursor to the end of the line it was typed on.
+    /// `cursorRow` is where the cursor is now, which is the row below the last one that line
+    /// occupies: the shell has echoed the Return by the time it reports the command started.
+    private func captureCommand(block index: Int, cursorRow: Int) {
+        guard rawBlocks[index].command.isEmpty,
+              let start = rawBlocks[index].commandRow, start < cursorRow else { return }
+        // A command too long for one row wraps onto the next, and the whole group is the one
+        // line it was typed on. A command typed across continuation lines does not wrap:
+        // each of those is a line of its own, behind a continuation prompt that is not the
+        // user's text, and only the first of them is this block's command line.
+        var end = start + 1
+        while end < cursorRow, isWrapped(end) { end += 1 }
+        let text = Array((start..<end).map(rowText).joined())
+        let column = min(rawBlocks[index].commandColumn, text.count)
+        rawBlocks[index].command = String(text[column...])
+            .trimmingCharacters(in: .whitespaces)
+        noteEcho(rawBlocks[index])
     }
 
     /// Marks the lines a command was echoed onto: from where the prompt ended, which is where
@@ -689,8 +715,8 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
     /// continuation lines covers each of them.
     ///
     /// C often has not landed on a line yet -- a command that prints nothing leaves it on the
-    /// row the next prompt will be drawn on -- and until it does, the command is the one line
-    /// it was read off.
+    /// row the next prompt will be drawn on -- so this runs again as each anchor arrives,
+    /// and until the output's does, the echo is the one line the command was typed on.
     private func noteEcho(_ block: RawBlock) {
         guard !block.command.isEmpty, let line = block.commandLine else { return }
         let end = max(line + 1, block.outputStart ?? line + 1)
@@ -824,7 +850,6 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         }
         if readEnd > readFrom { frameStart = readFrom }
         if readEnd > extentRow { extentRow = readEnd }
-        readCommands(touching: touched)
         // Anchors on rows that went past unread -- recycled out of a full scrollback -- are
         // never coming back.
         pendingAnchors = pendingAnchors.filter { $0.key >= trimmed }
