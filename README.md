@@ -52,6 +52,10 @@ can skip ahead.
    finish. It is a large download.
 4. If instead you see a message saying the tools are already installed, you are ready.
 
+That is all you need. AccessTerm builds with the Command Line Tools alone -- the full Xcode
+app is not required. The build scripts below take care of the one setting that makes this
+work, so there is nothing for you to configure.
+
 ### Step 1: get the code onto your Mac
 
 If you know Git, clone the repository as usual:
@@ -87,7 +91,7 @@ There are two ways to do this. Both build the same program.
 **The quick way -- try it now.** Type:
 
 ```
-swift run
+./run.sh
 ```
 
 This compiles the app and launches it as soon as it is ready. The first run has to download
@@ -121,6 +125,10 @@ You do not need Xcode, but it works. In Xcode choose File > Open, select the `Pa
 file inside the AccessTerm folder, pick the AccessTerm scheme, and press Command-R to build and
 run. Xcode downloads SwiftTerm on its own the first time.
 
+Xcode builds with its own engine rather than the one the scripts select, so it compiles
+SwiftTerm's Metal shader. If it stops with `unable to spawn process 'metal'`, install the
+Metal Toolchain in Xcode > Settings > Components. The scripts above never hit this.
+
 ### If something goes wrong
 
 | What you see | What it means | What to do |
@@ -129,7 +137,8 @@ run. Xcode downloads SwiftTerm on its own the first time.
 | An error about `xcrun` or a missing developer directory | Same thing, or Xcode is not selected | Run `xcode-select --install`; if Xcode is installed, run `sudo xcode-select -s /Applications/Xcode.app` |
 | `No such file or directory` after `cd` | Terminal is not in the AccessTerm folder | Check the path; drag the folder onto the Terminal window to fill it in |
 | The build stops with a network or "failed to clone" error | It could not fetch SwiftTerm | Check your internet connection and run the command again |
-| `permission denied: ./make-app.sh` | The script is not marked runnable | Run `chmod +x make-app.sh`, then try again |
+| `unable to spawn process 'metal'` | The build tried to compile a shader AccessTerm does not use | Use `./run.sh` or `./make-app.sh` rather than `swift run` or `swift build`; they select the build system that skips it |
+| `permission denied: ./run.sh` or `./make-app.sh` | The script is not marked runnable, which unzipping can cause | Run `chmod +x run.sh make-app.sh`, then try again |
 | macOS says the app cannot be opened because it is from an unidentified developer | Gatekeeper does not recognise a locally built app | Control-click `AccessTerm.app` in Finder and choose Open, then confirm |
 
 Remember to turn VoiceOver on (Command-F5) before you start using AccessTerm -- it is built
