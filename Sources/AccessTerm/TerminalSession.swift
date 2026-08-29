@@ -225,6 +225,10 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         }
 
         let envArray = env.map { "\($0.key)=\($0.value)" }
+        // The shell inherits the app's working directory, and for an app launched from the
+        // Dock or Finder that is "/" -- where `ls Docu` completes to nothing and every
+        // relative path is wrong. Every terminal starts at home, as Terminal.app's do.
+        FileManager.default.changeCurrentDirectoryPath(NSHomeDirectory())
         isRunning = true
         process.startProcess(executable: shell, args: ["-l"], environment: envArray)
     }
