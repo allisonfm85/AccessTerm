@@ -481,16 +481,23 @@ final class MainViewController: NSViewController,
         mirrorAppended(newLines)
     }
 
-    /// Adds lines the session has already put in the transcript to the text view.
-    private func mirrorAppended(_ newLines: [String]) {
+    /// Adds lines the session has already put in the transcript to the text view. `styles`
+    /// is parallel to `newLines` and purely decorative -- see StyleRun; an empty array (the
+    /// appendExternal path) draws everything in the default style.
+    private func mirrorAppended(_ newLines: [String], styles: [[StyleRun]] = []) {
         guard !newLines.isEmpty, screenLines == nil, let storage = textView.textStorage else { return }
-        let chunk = newLines.map { $0 + "\n" }.joined()
+        let chunk = NSMutableAttributedString()
+        for (index, line) in newLines.enumerated() {
+            let attributed = NSMutableAttributedString(string: line + "\n", attributes: textAttributes)
+            if index < styles.count { paint(styles[index], on: attributed) }
+            chunk.append(attributed)
+        }
         // If the user has moved the caret back to read something, new output must not drag
         // the view away from them.
         let follow = shouldFollowOutput
         let selection = textView.selectedRanges
         textView.withoutSelfVoicing {
-            storage.append(NSAttributedString(string: chunk, attributes: textAttributes))
+            storage.append(chunk)
             // Appending past the caret should leave it alone, but restore it explicitly rather
             // than relying on that: the caret is the reading position.
             textView.setSelectedRanges(selection,
@@ -504,17 +511,17 @@ final class MainViewController: NSViewController,
 
     /// Rewrites lines whose rows the program has redrawn. The edits are applied in the order
     /// the session made them, because each one's range is the range to replace once the
-    /// edits before it are in.
-    private func mirrorEdits(_ edits: [Transcript.Edit]) {
+    /// edits before it are in. `styles` is parallel to `edits`, decorative only.
+    private func mirrorEdits(_ edits: [Transcript.Edit], styles: [[StyleRun]] = []) {
         guard !edits.isEmpty, screenLines == nil, let storage = textView.textStorage else { return }
         let follow = shouldFollowOutput
         var selection = textView.selectedRange()
         textView.withoutSelfVoicing {
-            for edit in edits {
+            for (index, edit) in edits.enumerated() {
                 guard NSMaxRange(edit.range) <= storage.length else { continue }
-                storage.replaceCharacters(in: edit.range,
-                                          with: NSAttributedString(string: edit.text,
-                                                                   attributes: textAttributes))
+                let attributed = NSMutableAttributedString(string: edit.text, attributes: textAttributes)
+                if index < styles.count { paint(styles[index], on: attributed) }
+                storage.replaceCharacters(in: edit.range, with: attributed)
                 let delta = (edit.text as NSString).length - edit.range.length
                 selection = adjusting(selection, forEditIn: edit.range, delta: delta)
                 if let offset = lastCommandOffset, offset >= NSMaxRange(edit.range) {
@@ -527,6 +534,26 @@ final class MainViewController: NSViewController,
         }
         if follow {
             textView.scrollRangeToVisible(NSRange(location: textLength, length: 0))
+        }
+    }
+
+    /// Lays a line's style runs over its base attributes: color, background, bold, underline.
+    /// Decoration only -- attributes carry no speech of their own, so nothing VoiceOver says
+    /// changes -- and every range is bounds-checked so a stray run cannot touch the wrong
+    /// characters (the newline the mirror appends sits outside every run by construction).
+    private func paint(_ runs: [StyleRun], on text: NSMutableAttributedString) {
+        guard !runs.isEmpty else { return }
+        let boldFont = (textAttributes[.font] as? NSFont).map {
+            NSFontManager.shared.convert($0, toHaveTrait: .boldFontMask)
+        }
+        for run in runs {
+            guard run.range.location >= 0, NSMaxRange(run.range) <= text.length else { continue }
+            var attributes: [NSAttributedString.Key: Any] = [:]
+            if let color = run.color { attributes[.foregroundColor] = TerminalPalette.color(color) }
+            if let background = run.background { attributes[.backgroundColor] = TerminalPalette.color(background) }
+            if run.underline { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+            if run.bold, let boldFont { attributes[.font] = boldFont }
+            if !attributes.isEmpty { text.addAttributes(attributes, range: run.range) }
         }
     }
 
@@ -738,8 +765,8 @@ final class MainViewController: NSViewController,
             if isKeyTerminalWindow { announcer.announceNow("Returned to transcript") }
         }
 
-        mirrorEdits(update.edits)
-        mirrorAppended(update.newLines)
+        mirrorEdits(update.edits, styles: update.editStyles)
+        mirrorAppended(update.newLines, styles: update.newLineStyles)
         // A command that failed says so on the end of whatever it printed.
         let failures = update.finishedCommands
             .filter { $0.failed }

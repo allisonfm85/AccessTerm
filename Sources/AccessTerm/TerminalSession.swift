@@ -10,6 +10,12 @@ struct TerminalUpdate {
     /// Lines already in the transcript whose rows were redrawn, as replacements to apply to
     /// a mirror of the transcript, in the order they are given.
     var edits: [Transcript.Edit] = []
+    /// Style runs for each entry in newLines, in the same order, or empty when nothing was
+    /// styled. Decoration only -- see StyleRun. The transcript itself stores no styles; they
+    /// exist for the mirror to paint and are gone once painted.
+    var newLineStyles: [[StyleRun]] = []
+    /// Style runs for each entry in edits, in the same order.
+    var editStyles: [[StyleRun]] = []
     /// Everything at and below the cursor that is not yet part of a line
     /// (typically the shell prompt, a partially printed line, or a progress line). When the
     /// cursor is parked on an empty row under a frame that was just redrawn, this is the
@@ -855,15 +861,25 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
 
         var newLines: [String] = []
         var edits: [Transcript.Edit] = []
+        var newLineStyles: [[StyleRun]] = []
+        var editStyles: [[StyleRun]] = []
         var touched: Set<Int> = []
         let firstNewLine = transcript.count
 
         var row = readFrom
         while row < readEnd {
             var text = rowText(row)
+            var styles = rowStyles(row, text: text)
             var end = row + 1
             while end < readEnd, isWrapped(end) {
-                text += rowText(end)
+                let segment = rowText(end)
+                let shift = (text as NSString).length
+                styles.append(contentsOf: rowStyles(end, text: segment).map { run in
+                    var shifted = run
+                    shifted.range.location += shift
+                    return shifted
+                })
+                text += segment
                 end += 1
             }
             let group = row..<end
@@ -871,11 +887,15 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
             let line: Int
             if let existing = rowToLine[row], lineRows.indices.contains(existing) {
                 line = existing
-                if let edit = transcript.revise(existing, to: text) { edits.append(edit) }
+                if let edit = transcript.revise(existing, to: text) {
+                    edits.append(edit)
+                    editStyles.append(styles)
+                }
             } else {
                 line = transcript.append(text)
                 lineRows.append(group)
                 newLines.append(text)
+                newLineStyles.append(styles)
             }
             if lineRows[line] != group {
                 lineRows[line] = group
@@ -936,6 +956,8 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         delegate?.session(self, didUpdate: TerminalUpdate(newLines: newLines,
                                                           firstNewLine: firstNewLine,
                                                           edits: edits,
+                                                          newLineStyles: newLineStyles,
+                                                          editStyles: editStyles,
                                                           liveText: liveText,
                                                           alternateScreen: nil,
                                                           programIsRunning: programIsRunning,
@@ -972,5 +994,88 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
     private func rowText(_ row: Int) -> String {
         guard let line = terminal.getScrollInvariantLine(row: row) else { return "" }
         return lineText(line, trimRight: !isWrapped(row + 1))
+    }
+
+    /// Style runs for one transcript row, aligned to the text rowText produced for it.
+    private func rowStyles(_ row: Int, text: String) -> [StyleRun] {
+        guard let line = terminal.getScrollInvariantLine(row: row) else { return [] }
+        return lineStyles(line, text: text)
+    }
+
+    /// Style runs for one buffer line, aligned to `text` -- the string lineText made from it.
+    ///
+    /// Walks the cells with the same rules lineText's translation uses (a null cell renders
+    /// as one space, the null pad after a double-width character renders as nothing) and
+    /// measures in UTF-16 units, so each run lands on exactly the characters it styled. The
+    /// walk stops where the text does, which is what honors trimming. If the walk and the
+    /// text ever disagree -- they should not, but the two passes are separate code -- the
+    /// runs are dropped and the line draws plain: misplaced color could decorate the wrong
+    /// characters, absent color cannot, and the text itself was never touched either way.
+    private func lineStyles(_ line: BufferLine, text: String) -> [StyleRun] {
+        let textLength = (text as NSString).length
+        guard textLength > 0 else { return [] }
+
+        var runs: [StyleRun] = []
+        var current: StyleRun?
+        var position = 0
+        var index = 0
+        let limit = line.count
+        while index < limit, position < textLength {
+            let cell = line[index]
+            let character = cell.getCharacter()
+            if index > 0, character == "\0", line[index - 1].width == 2 {
+                index += 1
+                continue
+            }
+            index += 1
+            let length = character == "\0" ? 1 : String(character).utf16.count
+            let style = styleOf(cell.attribute)
+            if var run = current {
+                if run.color == style.color, run.background == style.background,
+                   run.bold == style.bold, run.underline == style.underline {
+                    run.range.length += length
+                    current = run
+                } else {
+                    if !run.isPlain { runs.append(run) }
+                    current = StyleRun(range: NSRange(location: position, length: length),
+                                       color: style.color, background: style.background,
+                                       bold: style.bold, underline: style.underline)
+                }
+            } else {
+                current = StyleRun(range: NSRange(location: position, length: length),
+                                   color: style.color, background: style.background,
+                                   bold: style.bold, underline: style.underline)
+            }
+            position += length
+        }
+        if let run = current, !run.isPlain { runs.append(run) }
+        // The verification that makes wrong color impossible: cover the text exactly or say
+        // nothing at all.
+        guard position == textLength else { return [] }
+        return runs
+    }
+
+    /// One cell's attribute as the app's own style. Default colors become nil -- no override.
+    /// Inverse video is approximated by swapping the two, which reads right whenever the
+    /// program set at least one of them; a default-on-default inverse (zsh's partial-line
+    /// percent sign) is left plain rather than guessed at.
+    private func styleOf(_ attribute: Attribute) -> StyleRun {
+        var color = terminalColor(attribute.fg)
+        var background = terminalColor(attribute.bg)
+        if attribute.style.contains(.inverse), color != nil || background != nil {
+            swap(&color, &background)
+        }
+        return StyleRun(range: NSRange(location: 0, length: 0),
+                        color: color, background: background,
+                        bold: attribute.style.contains(.bold),
+                        underline: attribute.style.contains(.underline))
+    }
+
+    private func terminalColor(_ color: Attribute.Color) -> TerminalColor? {
+        switch color {
+        case .ansi256(let code): return .ansi(code)
+        case .trueColor(let red, let green, let blue): return .rgb(red, green, blue)
+        case .defaultColor, .defaultInvertedColor: return nil
+        }
     }
 }
