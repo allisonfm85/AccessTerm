@@ -542,6 +542,11 @@ final class MainViewController: NSViewController,
             logEchoDecisions(update, afterNews: afterNews, afterAlreadySpoken: afterAlreadySpoken,
                              afterDropEcho: lines, comparedAgainst: comparedAgainst, extra: extra)
         }
+        // A background window records but does not speak. The bookkeeping above has to run
+        // regardless -- LineNews and the echo state track what happened, not what was said --
+        // and it marking these lines as dealt with is deliberate: switching to a tab does not
+        // replay a backlog, it lands you in a transcript you can review.
+        guard isKeyTerminalWindow else { return }
         // The hint about what Return alone does goes on here, after the checks above have
         // matched a committed line against text it repeats: both are still verbatim.
         announcer.enqueue((lines + extra).map(PromptDefault.spoken))
@@ -677,6 +682,17 @@ final class MainViewController: NSViewController,
 
     // MARK: - TerminalSessionDelegate
 
+    /// Whether this window's output should be spoken right now. With File > New Window and
+    /// New Tab there can be several terminals, and only one of them is being listened to: a
+    /// build chattering away in a background tab must not talk over the window the user is
+    /// in. Everything that streams -- output batches, screen diffs -- speaks only from the
+    /// key window. The transcript still records all of it, so switching to a tab and
+    /// reviewing is how a background window is caught up on; the bell is the one voice a
+    /// background window keeps, and it says which window it is (see sessionDidRingBell).
+    private var isKeyTerminalWindow: Bool {
+        view.window?.isKeyWindow ?? false
+    }
+
     func session(_ session: TerminalSession, didUpdate update: TerminalUpdate) {
         if let screen = update.alternateScreen {
             let previous = screenLines
@@ -684,8 +700,8 @@ final class MainViewController: NSViewController,
             setText(screen.map { $0 + "\n" }.joined())
             if previous == nil {
                 liveLabel.stringValue = "Full-screen program running. The transcript shows its screen."
-                announcer.announceNow("Full-screen program started")
-            } else if let previous {
+                if isKeyTerminalWindow { announcer.announceNow("Full-screen program started") }
+            } else if let previous, isKeyTerminalWindow {
                 // Cheap screen-diff: speak rows that changed.
                 var changed: [String] = []
                 for i in 0..<screen.count where i >= previous.count || previous[i] != screen[i] {
@@ -701,7 +717,7 @@ final class MainViewController: NSViewController,
             screenLines = nil
             setText(transcript.text())
             moveCaret(to: textLength)
-            announcer.announceNow("Returned to transcript")
+            if isKeyTerminalWindow { announcer.announceNow("Returned to transcript") }
         }
 
         mirrorEdits(update.edits)
@@ -724,7 +740,15 @@ final class MainViewController: NSViewController,
     func sessionDidRingBell(_ session: TerminalSession) {
         NSSound.beep()
         let detail = liveText.isEmpty ? "" : " " + liveText
-        announcer.announceNow("Attention." + detail, priority: .high)
+        if isKeyTerminalWindow {
+            announcer.announceNow("Attention." + detail, priority: .high)
+        } else {
+            // The bell is the one thing a background window is allowed to say -- it is a
+            // program asking for input, which is worth interrupting for -- and it has to say
+            // where, or "Attention" sends the user hunting through tabs.
+            let name = view.window?.title ?? "another window"
+            announcer.announceNow("Attention in \(name)." + detail, priority: .high)
+        }
     }
 
     func session(_ session: TerminalSession, didChangeTitle title: String) {
@@ -736,7 +760,14 @@ final class MainViewController: NSViewController,
         appendExternal([message])
         liveLabel.stringValue = message
         inputLine.isEnabled = false
-        announcer.announceNow(message)
+        // A shell dying is said even from a background window -- that terminal is over, and
+        // silence would leave a dead tab to be discovered later -- but, like the bell, from
+        // the background it says where.
+        if isKeyTerminalWindow {
+            announcer.announceNow(message)
+        } else {
+            announcer.announceNow("Shell exited in \(view.window?.title ?? "another window")")
+        }
     }
 
     // MARK: - Menu actions

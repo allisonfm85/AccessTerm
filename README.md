@@ -14,6 +14,7 @@ It needs macOS 13 (Ventura) or later.
 
 - [Installing and running AccessTerm](#installing-and-running-accessterm)
 - [What the window looks like](#what-the-window-looks-like)
+- [Windows and tabs](#windows-and-tabs)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Programs that redraw the screen](#programs-that-redraw-the-screen)
 - [Command blocks](#command-blocks)
@@ -168,6 +169,26 @@ anywhere in the window.
    said that the app did not choose to say. What that costs is a caret: editing is typing and
    Backspace, and the shell does the rest (see below).
 
+## Windows and tabs
+
+File > New Window (Command-N) opens another terminal, with a shell of its own. File > New Tab
+(Command-T) does the same but puts it in the same window as a tab, the standard macOS tab bar
+that VoiceOver reads like any other -- and the system's usual tab commands (Show Next Tab,
+Merge All Windows and so on) appear in the Window menu once there are tabs to use them on.
+Command-W closes the front window or tab, and Option-Command-W closes them all -- each one
+still asks first if a program is running in it.
+
+Each terminal is separate: its own shell, its own transcript, its own command blocks. What is
+shared is your ears, so only the window you are in speaks. A build running in a background tab
+writes to its transcript in silence; you catch up by switching to it and reading, the same way
+you review anything else. The one thing a background window says out loud is its bell --
+a program asking for input is worth interrupting for -- and it names the window it rang in,
+so "Attention in claude — AccessTerm" tells you which tab wants you.
+
+Closing a window whose program is still running, or quitting while any window has one, asks
+first: closing kills the program, and an editor or a Claude session should not die to a slip
+of Command-W. A shell sitting at its prompt closes without a word.
+
 ## Keyboard shortcuts
 
 These all use Command, so they never collide with VoiceOver's Control-Option commands. They
@@ -175,6 +196,9 @@ work from anywhere in the window.
 
 | Key | Action |
 | --- | --- |
+| Command-N | New window |
+| Command-T | New tab |
+| Command-W | Close the front window or tab |
 | Command-1 | Focus the transcript, caret at the last command you ran |
 | Command-2 | Focus the command line |
 | Command-Shift-E | Go to the end of the transcript |
@@ -192,7 +216,9 @@ work from anywhere in the window.
 - **Left/Right arrow**: move one character. **Option-Left/Right**: move one word.
 - **Shift** with any of those extends the selection. **Command-A** selects all.
 - **Command-C** copies the selection; **Command-Shift-C** copies the whole transcript.
-- **Command-F** opens Find (Edit > Find). Return and Shift-Return step through matches.
+- **Command-F** opens Find (Edit > Find). Return and Shift-Return step through matches, and so
+  do **Command-G** (Find Next) and **Command-Shift-G** (Find Previous) once the find bar has
+  been dismissed. **Command-E** makes the selection the thing being searched for.
 - **Command-1** puts the caret at the start of the last command you ran, which is also the top
   of that command's output. Before you have run anything, it goes to the end.
 - **Option-Command-Up / Option-Command-Down** step between commands. Each stop lands on the

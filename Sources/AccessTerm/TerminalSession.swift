@@ -231,6 +231,17 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
 
     func terminate() {
         guard isRunning else { return }
+        // A closing terminal says SIGHUP, and that is the only polite signal an interactive
+        // shell actually dies from: interactive zsh ignores SIGTERM by design, so that stray
+        // signals cannot take a login shell down. SwiftTerm's terminate() sends SIGTERM and
+        // closes the PTY -- but the close is deferred behind a read that, on a quiet
+        // terminal, never completes, so the SIGHUP the kernel would send on master close may
+        // never happen either. Closing a window leaked its shell that way. Sent to the
+        // process group -- the forkpty child leads it -- the HUP also reaches whatever the
+        // shell is running, and the shell passes it on to its jobs as it goes.
+        if process.shellPid != 0 {
+            killpg(process.shellPid, SIGHUP)
+        }
         process.terminate()
     }
 
