@@ -65,6 +65,10 @@ enum Replay {
         /// Mirrors the UI's suppression of a live question that later arrives as a line.
         private var announcedLiveText = ""
 
+        func session(_ session: TerminalSession, didCompleteLine buffer: String, cursor: Int) {
+            announced.append("completion: \(buffer) (cursor \(cursor))")
+        }
+
         func session(_ session: TerminalSession, didUpdate update: TerminalUpdate) {
             guard update.alternateScreen == nil else { return }
             liveText = update.liveText

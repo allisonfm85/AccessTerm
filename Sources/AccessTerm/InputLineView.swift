@@ -73,6 +73,14 @@ final class InputLineView: NSView {
         caret = 0
     }
 
+    /// The line handed back by the shell after a completion (see the session's OSC 7770
+    /// handling). Silent in itself: the caller announces what changed. From here the line is
+    /// reviewable, correctable and submittable again, exactly as if it had been typed.
+    func adopt(_ newText: String, caret newCaret: Int) {
+        text = newText
+        caret = max(0, min(newCaret, newText.count))
+    }
+
     private func refresh(_ changed: Bool) {
         guard changed else { return }
         caret = min(caret, text.count)

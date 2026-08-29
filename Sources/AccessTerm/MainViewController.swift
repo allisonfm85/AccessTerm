@@ -36,6 +36,12 @@ final class MainViewController: NSViewController,
     private var lastCommandOffset: Int?
     /// The command just sent, until its echo has been seen and left unannounced. See dropEcho.
     private var pendingEcho: String?
+
+    /// The text flushed ahead of a Tab, held while the shell's completion report is awaited;
+    /// nil when no completion is in flight. Its presence also softens the bell: a failed
+    /// completion beeps, and the report that follows explains, so "Attention" is not spoken.
+    private var completionInFlight: String?
+    private var completionTimeout: DispatchWorkItem?
     /// Diagnostic only: ACCESSTERM_ECHO_DEBUG puts one line on stderr per committed line,
     /// saying how it was classified and whether it was announced. See logEchoDecisions.
     private let echoDebug = ProcessInfo.processInfo.environment["ACCESSTERM_ECHO_DEBUG"] != nil
@@ -216,6 +222,18 @@ final class MainViewController: NSViewController,
             session.send(bytes: Array(text.utf8))
         }
         session.send(bytes: bytes)
+        // A Tab at the prompt is a completion, and the shell will report back what the line
+        // became (see ShellIntegration). What was flushed is kept to tell a completion that
+        // changed nothing from one that produced text. A Tab while a program runs is that
+        // program's business -- no report is coming -- and the timeout covers a shell that
+        // never answers, so a stale flag cannot swallow a later bell.
+        if bytes == [0x09], !session.programIsRunning {
+            completionInFlight = text
+            completionTimeout?.cancel()
+            let timeout = DispatchWorkItem { [weak self] in self?.completionInFlight = nil }
+            completionTimeout = timeout
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: timeout)
+        }
     }
 
     /// The input line's own voice: the character or word the caret crossed, what a deletion
@@ -737,8 +755,41 @@ final class MainViewController: NSViewController,
         }
     }
 
+    /// The shell completed the line and handed it back. The input line takes it, and what is
+    /// spoken is the useful part: the word the completion produced, or the fact that there was
+    /// nothing unique to produce (candidates, if zsh listed them, are in the transcript).
+    func session(_ session: TerminalSession, didCompleteLine buffer: String, cursor: Int) {
+        let sent = completionInFlight
+        completionInFlight = nil
+        completionTimeout?.cancel()
+        inputLine.adopt(buffer, caret: cursor)
+        if buffer == sent {
+            announcer.announceNow("No unique completion.", priority: .high)
+        } else {
+            let word = completedWord(in: buffer, at: cursor)
+            announcer.announceNow(word.isEmpty ? "Completed." : word, priority: .high)
+        }
+    }
+
+    /// The token the caret sits at the end of -- the word a completion just produced. The
+    /// space a finished completion appends is stepped over first, so "git checkout " says
+    /// "checkout" rather than nothing.
+    private func completedWord(in buffer: String, at cursor: Int) -> String {
+        let characters = Array(buffer)
+        var end = max(0, min(cursor, characters.count))
+        while end > 0, characters[end - 1].isWhitespace { end -= 1 }
+        var start = end
+        while start > 0, !characters[start - 1].isWhitespace { start -= 1 }
+        return String(characters[start..<end])
+    }
+
     func sessionDidRingBell(_ session: TerminalSession) {
         NSSound.beep()
+        if completionInFlight != nil {
+            // A completion that found nothing beeps, and the report that follows says so in
+            // words; "Attention" on top of that would be noise. The beep still sounds.
+            return
+        }
         let detail = liveText.isEmpty ? "" : " " + liveText
         if isKeyTerminalWindow {
             announcer.announceNow("Attention." + detail, priority: .high)

@@ -65,6 +65,9 @@ struct CommandBlock {
 
 protocol TerminalSessionDelegate: AnyObject {
     func session(_ session: TerminalSession, didUpdate update: TerminalUpdate)
+    /// The shell ran a Tab completion and handed the edited line back (see ShellIntegration's
+    /// completion widget). `cursor` counts characters from the start of `buffer`.
+    func session(_ session: TerminalSession, didCompleteLine buffer: String, cursor: Int)
     func sessionDidRingBell(_ session: TerminalSession)
     func session(_ session: TerminalSession, didChangeTitle title: String)
     func session(_ session: TerminalSession, didTerminateWithExitCode code: Int32?)
@@ -192,6 +195,11 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         // transcript is addressed by logical line rather than by buffer row.
         terminal.registerOscHandler(code: 133) { [weak self] data in
             self?.handleCommandMarker(data)
+        }
+        // Completion reports (see ShellIntegration): the shell hands the completed line
+        // back rather than keeping it.
+        terminal.registerOscHandler(code: 7770) { [weak self] data in
+            self?.handleCompletionReport(data)
         }
         process = LocalProcess(delegate: self, dispatchQueue: .main)
     }
@@ -579,6 +587,21 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
     /// built from.
     private var cursorRow: Int {
         terminal.buffer.totalLinesTrimmed + terminal.getTopVisibleRow() + terminal.buffer.y
+    }
+
+    /// OSC 7770, printed by the completion widget the shell integration installs: the cursor
+    /// position, a semicolon, then the completed line base64 encoded. The line belongs to the
+    /// input view, so it goes straight to the delegate rather than becoming state here.
+    private func handleCompletionReport(_ data: ArraySlice<UInt8>) {
+        guard let payload = String(bytes: data, encoding: .utf8) else { return }
+        let fields = payload.split(separator: ";", omittingEmptySubsequences: false)
+        guard fields.count >= 2, let cursor = Int(fields[0]) else { return }
+        // base64 has no semicolons of its own, so anything after the first one is the
+        // encoding; whitespace is dropped in case an encoder wraps its output.
+        let encoded = fields[1...].joined(separator: ";").filter { !$0.isWhitespace }
+        guard let decoded = Data(base64Encoded: encoded),
+              let buffer = String(data: decoded, encoding: .utf8) else { return }
+        delegate?.session(self, didCompleteLine: buffer, cursor: cursor)
     }
 
     /// OSC 133: A before the prompt, B where the command is typed, C when it starts running,

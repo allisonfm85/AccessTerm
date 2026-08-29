@@ -102,6 +102,25 @@ enum ShellIntegration {
 
         add-zsh-hook precmd __accessterm_precmd
         add-zsh-hook preexec __accessterm_preexec
+
+        # Tab completion, reported back. The app's input line is the one place a command
+        # lives; zsh holds a line only for the instant it takes to complete it. The widget
+        # runs the completion, tells the app what the line became -- OSC 7770: the cursor,
+        # then the line, base64ed because a command line can contain anything -- and then
+        # empties its own buffer, so the line comes home instead of stranding in a buffer
+        # no screen reader can review. A side effect worth knowing: each Tab reaches zsh
+        # on a fresh line, so AUTO_MENU never sees a second consecutive Tab and repeated
+        # Tab re-lists candidates rather than cycling them; the listing is in the
+        # transcript to be read.
+        __accessterm_complete() {
+            zle expand-or-complete
+            local encoded="$(print -rn -- "$BUFFER" | base64)"
+            printf '\e]7770;%d;%s\a' "$CURSOR" "$encoded" > /dev/tty
+            BUFFER=""
+            CURSOR=0
+        }
+        zle -N __accessterm_complete
+        bindkey '^I' __accessterm_complete
     fi
     """#
 }
