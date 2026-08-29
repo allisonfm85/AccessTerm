@@ -158,6 +158,14 @@ final class MainViewController: NSViewController,
     private static let upArrow: UInt16 = 126
     private static let downArrow: UInt16 = 125
 
+    /// The modifiers a chord is actually about. An arrow key carries the function and
+    /// numeric-pad flags whether anyone pressed anything or not, so a chord that compares
+    /// against every device-independent flag never matches one: the flags on Option-Command-Up
+    /// are option, command, function and numeric pad. Only these four are the user's doing,
+    /// and matching on exactly them is what makes "exactly Option and Command" mean it --
+    /// Shift-Option-Command-Up is a different chord and is left alone.
+    private static let chordModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
+
     /// Reads Option-Command-Up and Option-Command-Down off the keyboard, rather than letting
     /// them be menu key equivalents.
     ///
@@ -167,11 +175,14 @@ final class MainViewController: NSViewController,
     /// landed on. Nothing here goes through the menu, so there is no name to say. The items
     /// are still in the menu, and still work when chosen from it; they name their chords in
     /// their titles instead of carrying them (see AppDelegate).
+    ///
+    /// Swallowing the event is what keeps it from going anywhere else: the input line reads
+    /// keys of its own in keyDown, and never sees these.
     private func installKeyMonitor() {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, event.window === self.view.window,
-                  event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                  event.modifierFlags.intersection(MainViewController.chordModifiers)
                       == [.command, .option] else { return event }
             switch event.keyCode {
             case MainViewController.upArrow:
