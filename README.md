@@ -21,6 +21,7 @@ It needs macOS 13 (Ventura) or later.
 - [What gets spoken](#what-gets-spoken)
 - [Settings applied automatically](#settings-applied-automatically)
 - [Diagnostics](#diagnostics)
+- [Development notes](#development-notes)
 - [Known limitations](#known-limitations)
 - [Known issues](#known-issues)
 - [Milestones](#milestones)
@@ -433,6 +434,17 @@ involved, which turns a program that came out wrong into a repeatable test:
 
 It prints the transcript the capture produces after a `--- transcript ---` marker, and the
 current line on standard error.
+
+## Development notes
+
+Notes for anyone working on AccessTerm itself, kept here because each one cost a day to find.
+
+- A menu item's key equivalent is not reliably yours. Key equivalents are offered to the key
+  window before they reach the main menu, so any chord a system view wants, it takes:
+  Option-Command-W reached the tab machinery, which closed a single tab, while File > Close
+  All -- the same action, clicked -- closed everything. A chord that has to work has to be
+  read off the keyboard with a local event monitor and the event swallowed there. This has
+  bitten twice: block-stepping first, then Close All.
 
 ## Known limitations
 
