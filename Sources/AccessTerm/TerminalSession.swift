@@ -978,11 +978,17 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
     /// together. Emit those cells as a single space. `skipNullCellsFollowingWide` keeps the
     /// null padding cell that trails a double-width character from becoming a second space.
     private func lineText(_ line: BufferLine, trimRight: Bool) -> String {
+        // CharData.getCharacter() only decodes single-scalar BMP cells. Emoji and
+        // combining sequences are stored as an index into the terminal's grapheme
+        // table, and through that path they decode to a bare space -- which is how
+        // the transcript (and VoiceOver) lost them. Terminal.getCharacter(for:) is
+        // the lookup that resolves the index back to the real cluster. Refs #11.
+        let terminal = self.terminal!
         let text = line.translateToString(
             trimRight: trimRight,
             skipNullCellsFollowingWide: true,
             characterProvider: { cell in
-                let character = cell.getCharacter()
+                let character = terminal.getCharacter(for: cell)
                 return character == "\0" ? " " : character
             })
         // A literal tab would collapse to nothing in the row for the same reason.
@@ -1022,7 +1028,11 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         let limit = line.count
         while index < limit, position < textLength {
             let cell = line[index]
-            let character = cell.getCharacter()
+            // Same grapheme resolution as lineText's provider, so a cluster's
+            // UTF-16 length is measured on the character the text actually
+            // contains -- otherwise every emoji line would fail the coverage
+            // check below and draw plain. Refs #11.
+            let character = terminal.getCharacter(for: cell)
             if index > 0, character == "\0", line[index - 1].width == 2 {
                 index += 1
                 continue
