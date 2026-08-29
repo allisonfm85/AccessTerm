@@ -95,15 +95,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toEnd.keyEquivalentModifierMask = [.command, .shift]
         termMenu.addItem(.separator())
 
-        // Command blocks. Arrow keys as key equivalents are the function-key code points.
-        let previous = termMenu.addItem(withTitle: "Previous Command",
-                                        action: #selector(MainViewController.previousCommand(_:)),
-                                        keyEquivalent: "\u{F700}")
-        previous.keyEquivalentModifierMask = [.command, .option]
-        let next = termMenu.addItem(withTitle: "Next Command",
-                                    action: #selector(MainViewController.nextCommand(_:)),
-                                    keyEquivalent: "\u{F701}")
-        next.keyEquivalentModifierMask = [.command, .option]
+        // Command blocks. These two carry no key equivalent on purpose: a menu command
+        // invoked by its shortcut is spoken by name before it runs, and a step is meant to be
+        // one utterance -- the command landed on, and nothing else. The chords are read
+        // straight off the keyboard instead (see MainViewController's key monitor) and named
+        // in the titles, the way Interrupt names the key it sends.
+        termMenu.addItem(withTitle: "Previous Command (Option-Command-Up)",
+                         action: #selector(MainViewController.previousCommand(_:)),
+                         keyEquivalent: "")
+        termMenu.addItem(withTitle: "Next Command (Option-Command-Down)",
+                         action: #selector(MainViewController.nextCommand(_:)),
+                         keyEquivalent: "")
         let copyOutput = termMenu.addItem(withTitle: "Copy Output of This Command",
                                           action: #selector(MainViewController.copyBlockOutput(_:)),
                                           keyEquivalent: "o")

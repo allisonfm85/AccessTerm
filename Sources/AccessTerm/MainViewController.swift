@@ -45,6 +45,9 @@ final class MainViewController: NSViewController,
     /// later gains its newline and arrives as a transcript line.
     private var announcedLiveText = ""
 
+    /// Watches for the block-step chords: see installKeyMonitor.
+    private var keyMonitor: Any?
+
     // MARK: - View construction
 
     /// Builds the TextKit 1 stack by hand. A plain `NSTextView(frame:)` gets TextKit 2 on
@@ -139,6 +142,48 @@ final class MainViewController: NSViewController,
         super.viewDidAppear()
         view.window?.initialFirstResponder = inputLine
         view.window?.makeFirstResponder(inputLine)
+        installKeyMonitor()
+    }
+
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
+        }
+    }
+
+    // MARK: - Stepping between commands
+
+    private static let upArrow: UInt16 = 126
+    private static let downArrow: UInt16 = 125
+
+    /// Reads Option-Command-Up and Option-Command-Down off the keyboard, rather than letting
+    /// them be menu key equivalents.
+    ///
+    /// A menu command invoked by its shortcut is spoken by name before it runs, so stepping
+    /// came out as the name of the menu item and then the command stepped to -- "previous
+    /// command", then "ls". A step is one thing and should say one thing: the command it
+    /// landed on. Nothing here goes through the menu, so there is no name to say. The items
+    /// are still in the menu, and still work when chosen from it; they name their chords in
+    /// their titles instead of carrying them (see AppDelegate).
+    private func installKeyMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.window === self.view.window,
+                  event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                      == [.command, .option] else { return event }
+            switch event.keyCode {
+            case MainViewController.upArrow:
+                self.stepCommand(-1)
+                return nil
+            case MainViewController.downArrow:
+                self.stepCommand(1)
+                return nil
+            default:
+                return event
+            }
+        }
     }
 
     // MARK: - Input line
