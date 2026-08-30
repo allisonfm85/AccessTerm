@@ -111,6 +111,9 @@ final class MainViewController: NSViewController,
         inputLine.font = monoFont
         inputLine.placeholder = "Type a command and press Return"
         inputLine.delegate = self
+        inputLine.applicationCursorKeys = { [weak self] in
+            self?.session.applicationCursorKeys ?? false
+        }
         inputLine.translatesAutoresizingMaskIntoConstraints = false
         inputLine.setContentHuggingPriority(.required, for: .vertical)
 
@@ -744,6 +747,8 @@ final class MainViewController: NSViewController,
             screenLines = screen
             setText(screen.map { $0 + "\n" }.joined())
             if previous == nil {
+                inputLine.passthrough = true
+                inputLine.placeholder = "Keys go to the program"
                 liveLabel.stringValue = "Full-screen program running. The transcript shows its screen."
                 if isKeyTerminalWindow { announcer.announceNow("Full-screen program started") }
             } else if let previous, isKeyTerminalWindow {
@@ -760,6 +765,8 @@ final class MainViewController: NSViewController,
 
         if screenLines != nil {
             screenLines = nil
+            inputLine.passthrough = false
+            inputLine.placeholder = "Type a command and press Return"
             setText(transcript.text())
             moveCaret(to: textLength)
             if isKeyTerminalWindow { announcer.announceNow("Returned to transcript") }

@@ -37,6 +37,25 @@ final class InputLineView: NSView {
     /// Whether keys are taken at all. Off once the shell has exited.
     var isEnabled = true
 
+    /// On while a full-screen program owns the alternate screen. The line-at-a-time model
+    /// has nothing to offer such a program -- it reads keys, not lines -- so every keystroke
+    /// is encoded as terminal bytes and sent straight through; nothing is buffered, reviewed
+    /// or drawn here. Command chords are the one exception: they still belong to the app, so
+    /// Command-1 review and Command-2 return work exactly as they do at the prompt. The label
+    /// changes so a focus read says where the keys are going.
+    var passthrough = false {
+        didSet {
+            guard passthrough != oldValue else { return }
+            setAccessibilityLabel(passthrough ? "Program input" : "Command line")
+            needsDisplay = true
+        }
+    }
+
+    /// Read at each keystroke while passing through: whether the program has asked for
+    /// application cursor keys, which decides how arrows are encoded. Supplied by the
+    /// controller from the live terminal state; never cached here.
+    var applicationCursorKeys: () -> Bool = { false }
+
     /// What has been typed and not yet sent.
     private(set) var text = "" { didSet { refresh(oldValue != text) } }
 
@@ -156,6 +175,8 @@ final class InputLineView: NSView {
     private static let tab: UInt16 = 48
     private static let home: UInt16 = 115
     private static let end: UInt16 = 119
+    private static let pageUp: UInt16 = 116
+    private static let pageDown: UInt16 = 121
     private static let up: UInt16 = 126
     private static let down: UInt16 = 125
     private static let left: UInt16 = 123
@@ -173,6 +194,18 @@ final class InputLineView: NSView {
             case InputLineView.right: moveCaret(to: text.count)
             default: super.keyDown(with: event)
             }
+            return
+        }
+
+        // A full-screen program reads keys, not lines: everything but Command chords goes to
+        // it as terminal bytes. Anything typed at the prompt just before the program took the
+        // screen is flushed first (through clear(), so VoiceOver's cached value of this line
+        // is invalidated the same way Return invalidates it).
+        if passthrough {
+            guard let bytes = encodeForProgram(event, flags: flags) else { return }
+            let pending = text
+            if !pending.isEmpty { clear() }
+            delegate?.inputLine(self, didSendToShell: bytes, pending: pending)
             return
         }
 
@@ -320,6 +353,93 @@ final class InputLineView: NSView {
         let pending = text
         clear()
         delegate?.inputLine(self, didSendToShell: bytes, pending: pending)
+    }
+
+    // MARK: - Full-screen program keys
+
+    /// A keystroke as the bytes a terminal sends for it, or nil for one that sends nothing.
+    /// This is what replaces the line-at-a-time handling while a program owns the screen:
+    /// nano's Control-X, vim's chords, Option as Meta, arrows in whichever encoding the
+    /// program asked for. Command chords never arrive here (keyDown keeps them for the app).
+    private func encodeForProgram(_ event: NSEvent, flags: NSEvent.ModifierFlags) -> [UInt8]? {
+        let app = applicationCursorKeys()
+        // ESC [ for normal cursor keys, ESC O when the program asked for application mode.
+        func arrow(_ letter: UInt8) -> [UInt8] { [0x1b, app ? 0x4f : 0x5b, letter] }
+
+        switch event.keyCode {
+        case InputLineView.returnKey, InputLineView.enterKey: return [0x0d]
+        case InputLineView.deleteKey: return [0x7f]
+        case InputLineView.forwardDelete: return [0x1b, 0x5b, 0x33, 0x7e]
+        case InputLineView.escape: return [0x1b]
+        case InputLineView.tab where flags.contains(.shift): return [0x1b, 0x5b, 0x5a]
+        case InputLineView.tab: return [0x09]
+        // Control-arrows have their own fixed encoding (CSI 1;5 C/D), used by editors for
+        // word movement; the plain arrows follow DECCKM.
+        case InputLineView.right where flags.contains(.control):
+            return [0x1b, 0x5b, 0x31, 0x3b, 0x35, 0x43]
+        case InputLineView.left where flags.contains(.control):
+            return [0x1b, 0x5b, 0x31, 0x3b, 0x35, 0x44]
+        // Option-arrows are word movement, sent the way Terminal.app sends them.
+        case InputLineView.left where flags.contains(.option): return [0x1b, 0x62]
+        case InputLineView.right where flags.contains(.option): return [0x1b, 0x66]
+        case InputLineView.up: return arrow(0x41)
+        case InputLineView.down: return arrow(0x42)
+        case InputLineView.right: return arrow(0x43)
+        case InputLineView.left: return arrow(0x44)
+        case InputLineView.home: return arrow(0x48)
+        case InputLineView.end: return arrow(0x46)
+        case InputLineView.pageUp: return [0x1b, 0x5b, 0x35, 0x7e]
+        case InputLineView.pageDown: return [0x1b, 0x5b, 0x36, 0x7e]
+        default: break
+        }
+
+        // Control chords, the full set this time -- at the prompt only C, D, Z and L pass
+        // through, but a full-screen program's whole vocabulary is control characters
+        // (Control-X is how nano exits). The mapping is the terminal's: letters to 1-26,
+        // and the handful of punctuation control characters around them.
+        if flags.contains(.control), !flags.contains(.option),
+           let scalar = event.charactersIgnoringModifiers?.lowercased().unicodeScalars.first {
+            switch scalar {
+            case "a"..."z": return [UInt8(scalar.value - 0x60)]
+            case " ", "@": return [0x00]
+            case "[": return [0x1b]
+            case "\\": return [0x1c]
+            case "]": return [0x1d]
+            case "^", "6": return [0x1e]
+            case "_", "-": return [0x1f]
+            case "?": return [0x7f]
+            default: return nil
+            }
+        }
+
+        // Option is Meta: ESC then the unmodified character. nano writes its shortcuts as
+        // M-U, M-A and so on, and this is what M- means.
+        if flags.contains(.option),
+           let base = event.charactersIgnoringModifiers,
+           let scalar = base.unicodeScalars.first, !(0xF700...0xF8FF).contains(scalar.value) {
+            return [0x1b] + Array(base.utf8)
+        }
+
+        // Function keys arrive as private-use scalars; F1-F4 have the old ESC O codes,
+        // the rest are CSI number ~.
+        if let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first,
+           (0xF704...0xF70F).contains(scalar.value) {
+            let codes: [[UInt8]] = [
+                [0x1b, 0x4f, 0x50], [0x1b, 0x4f, 0x51], [0x1b, 0x4f, 0x52], [0x1b, 0x4f, 0x53],
+                [0x1b, 0x5b, 0x31, 0x35, 0x7e], [0x1b, 0x5b, 0x31, 0x37, 0x7e],
+                [0x1b, 0x5b, 0x31, 0x38, 0x7e], [0x1b, 0x5b, 0x31, 0x39, 0x7e],
+                [0x1b, 0x5b, 0x32, 0x30, 0x7e], [0x1b, 0x5b, 0x32, 0x31, 0x7e],
+                [0x1b, 0x5b, 0x32, 0x33, 0x7e], [0x1b, 0x5b, 0x32, 0x34, 0x7e],
+            ]
+            return codes[Int(scalar.value - 0xF704)]
+        }
+
+        // Everything else is text, sent as typed. The private-use range is the system's
+        // encoding of keys that are not text (arrows not caught above, and so on).
+        let typed = (event.characters ?? "").unicodeScalars
+            .filter { !(0xF700...0xF8FF).contains($0.value) }
+        guard !typed.isEmpty else { return nil }
+        return Array(String(String.UnicodeScalarView(typed)).utf8)
     }
 
     // MARK: - Edit menu

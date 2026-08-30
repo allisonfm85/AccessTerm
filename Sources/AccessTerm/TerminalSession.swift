@@ -482,6 +482,12 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         return last.didRun && !last.isFinished
     }
 
+    /// Whether the running program has asked for application cursor keys (DECCKM). Arrows
+    /// sent to it must be encoded to match -- ESC O A when set, ESC [ A when not. vim sets
+    /// it, nano does not, and the mode can change at any write, so this is read at the
+    /// keystroke, never stored.
+    var applicationCursorKeys: Bool { terminal?.applicationCursor ?? false }
+
     /// What a program that labels its own turns prints the question behind.
     private static let turnPrefix = "you: "
 
