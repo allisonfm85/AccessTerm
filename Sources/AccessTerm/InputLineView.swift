@@ -55,8 +55,8 @@ final class InputLineView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         setAccessibilityElement(true)
-        // Static text, not a text field: nothing here reports an editable value, and nothing
-        // posts one changing.
+        // Static text, not a text field: nothing here reports an editable value, and typing
+        // posts no value changes. The one exception is clear() -- see the note there.
         setAccessibilityRole(.staticText)
         setAccessibilityLabel("Command line")
         refresh(true)
@@ -71,6 +71,13 @@ final class InputLineView: NSView {
     func clear() {
         text = ""
         caret = 0
+        // The one value-changed notification this view ever posts. VoiceOver caches the
+        // value whenever it reads the line, and with no notification nothing ever
+        // invalidates that cache -- a later focus read can serve the submitted line back
+        // (the phantom-line bug: heard as the old line followed by "Command line").
+        // Typing stays unnarrated because inserts still post nothing; this fires only
+        // when the line empties, when the value is "" and there is nothing to say.
+        NSAccessibility.post(element: self, notification: .valueChanged)
     }
 
     /// The line handed back by the shell after a completion (see the session's OSC 7770
@@ -85,8 +92,13 @@ final class InputLineView: NSView {
         guard changed else { return }
         caret = min(caret, text.count)
         needsDisplay = true
-        setAccessibilityValue(text)
     }
+
+    /// Served at fetch time rather than pushed with setAccessibilityValue: a pushed value
+    /// is stored state, and stored state is one more place a stale line can survive. A
+    /// getter can only ever answer with the current text. Same pattern as the transcript
+    /// view's quiet window.
+    override func accessibilityValue() -> Any? { text }
 
     /// The string index `offset` characters in, clamped.
     private func index(_ offset: Int) -> String.Index {
