@@ -29,10 +29,18 @@ It needs macOS 13 (Ventura) or later.
 
 ## Installing and running AccessTerm
 
-AccessTerm is not distributed as a ready-made download yet, so you build it yourself: you copy
-the source code to your Mac and run one command that turns it into a working program.
-"Building" (or "compiling") just means that translation step. You only have to do it once, and
-you do not need to know anything about the code to do it.
+The quickest way is the ready-made download: open the
+[Releases page](https://github.com/allisonfm85/AccessTerm/releases), download the
+`AccessTerm-<version>.zip` file under the newest release, unzip it, and move `AccessTerm.app`
+into your Applications folder. The app is not notarized with Apple, so the first time you open
+it macOS says it cannot verify the developer. Close that dialog, open System Settings, go to
+Privacy & Security, scroll down, and press **Open Anyway** next to the AccessTerm message.
+That is needed once.
+
+If you would rather build it yourself, or want the very latest changes, you copy the source
+code to your Mac and run one command that turns it into a working program. "Building" (or
+"compiling") just means that translation step. You only have to do it once, and you do not
+need to know anything about the code to do it.
 
 The whole process is: install Apple's developer tools, download the code, run one command.
 Expect ten minutes the first time, most of it spent waiting.

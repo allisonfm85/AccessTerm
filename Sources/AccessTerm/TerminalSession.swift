@@ -217,7 +217,7 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
         env["TERM_PROGRAM"] = "AccessTerm"
-        env["TERM_PROGRAM_VERSION"] = "0.1"
+        env["TERM_PROGRAM_VERSION"] = "0.1.0"
         if env["LANG"] == nil { env["LANG"] = "en_US.UTF-8" }
         env.removeValue(forKey: "LINES")
         env.removeValue(forKey: "COLUMNS")
