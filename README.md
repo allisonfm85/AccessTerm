@@ -459,6 +459,10 @@ Notes for anyone working on AccessTerm itself, kept here because each one cost a
   All -- the same action, clicked -- closed everything. A chord that has to work has to be
   read off the keyboard with a local event monitor and the event swallowed there. This has
   bitten twice: block-stepping first, then Close All.
+- Cutting a release is one command: `./release.sh 0.2.0` sets the version, builds a universal
+  app, signs and notarizes it, tags the commit, and publishes the GitHub release with the zip
+  attached. Notarization needs a one-time `notarytool store-credentials` setup, described at
+  the top of the script; without it the script still works but warns and skips that step.
 
 ## Known limitations
 
