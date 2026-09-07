@@ -67,21 +67,22 @@ git clone https://github.com/allisonfm85/AccessTerm.git
 ```
 
 If you do not, go to <https://github.com/allisonfm85/AccessTerm>, use the green **Code**
-button, choose **Download ZIP**, and unzip the file that lands in your Downloads folder. Either
-way you end up with a folder named `AccessTerm`.
+button, choose **Download ZIP**, and unzip the file your browser saves. Either way you end up
+with a folder named `AccessTerm`, wherever you chose to put it.
 
 ### Step 2: tell Terminal to work inside that folder
 
 Terminal is always "in" one folder at a time, and it only sees the files there. The `cd`
-command ("change directory") moves it. If the folder is in your Downloads, that is:
+command ("change directory") moves it, and it needs the path to wherever you put the
+AccessTerm folder.
 
-```
-cd ~/Downloads/AccessTerm
-```
+The way that works no matter where that is, without typing a path at all: type `cd ` (with a
+space after it), then drag the AccessTerm folder from Finder onto the Terminal window, which
+fills in its path for you, and press Return.
 
-The `~` is shorthand for your home folder. If you put the folder somewhere else, adjust the
-path -- or type `cd ` (with a space after it), then drag the folder from Finder onto the
-Terminal window, which fills in the path for you, and press Return.
+If you would rather type it, the command is `cd ` followed by that path. So for a copy
+sitting directly in your home folder it is `cd ~/AccessTerm`, where `~` is shorthand for your
+home folder.
 
 Nothing visible happens when `cd` works. That is normal; silence means success. If you see
 "No such file or directory", the path is wrong, not the app.
@@ -258,8 +259,13 @@ work from anywhere in the window.
   are at rather than going quiet.
 - **Backspace** deletes the character before the caret and says what it was. **Forward
   Delete** takes the one after it. Typing anywhere in the line inserts at the caret.
-- **Command-V**: paste. Newlines become spaces, so a pasted command is there to look at before
-  it runs rather than running on arrival.
+- **Command-V**: paste. A single line is inserted for you to look at before it runs, rather
+  than running on arrival. A paste with newlines in it is not flattened onto the line --
+  newlines carry meaning, like a heredoc's terminator or the body of a loop -- so it is saved
+  as a script and `source '<path>'` is put on the line instead. That is a command like any
+  other: read it back, correct it, and press Return to run it, and the transcript records
+  exactly what ran. While a full-screen program has the screen, a paste goes straight to the
+  program instead, newlines and all, the way any terminal pastes.
 - **Control-C, Control-D, Control-Z, Control-L, Escape**: sent straight to the program.
 - **Shift-Tab**: sent to the program (Claude Code uses it to cycle permission modes).
 - Typing itself is silent. Whether keystrokes are spoken is VoiceOver's own key echo setting,
