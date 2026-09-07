@@ -7,6 +7,10 @@ protocol InputLineViewDelegate: AnyObject {
     /// character. `text` is whatever had been typed and not yet sent, for the delegate to
     /// flush first so that the shell's line and this one do not disagree.
     func inputLine(_ view: InputLineView, didSendToShell bytes: [UInt8], pending text: String)
+    /// A paste with newlines in it. Not flattened -- newlines carry meaning (a heredoc's
+    /// terminator, a block's body) -- and not submitted: the delegate saves the text and
+    /// puts a command that runs it on the line, still a command to look at before it runs.
+    func inputLine(_ view: InputLineView, didPasteMultiline text: String)
     /// Something for the screen reader to say: the character the caret crossed, the word it
     /// crossed, what a deletion removed. Typing itself says nothing.
     func inputLine(_ view: InputLineView, announce text: String)
@@ -445,14 +449,29 @@ final class InputLineView: NSView {
     // MARK: - Edit menu
 
     /// Command-V. The Edit menu's Paste travels the responder chain, so without this it would
-    /// reach the input line and do nothing. Newlines are dropped rather than submitted: what is
-    /// pasted is a command to look at before it runs.
+    /// reach the input line and do nothing. A single line is inserted for review, exactly as
+    /// if typed. A paste with newlines in it is NOT flattened onto the line: newlines carry
+    /// meaning (a heredoc's terminator, a block's body), and fusing them to spaces left zsh
+    /// waiting silently at a continuation prompt. Multi-line pastes go to the delegate, which
+    /// saves them as a script and puts the command that runs it here -- still a command to
+    /// look at before it runs. While a program owns the screen, the paste goes straight
+    /// through to it, newlines as carriage returns, the way a terminal pastes.
     @objc func paste(_ sender: Any?) {
         guard isEnabled,
               let pasted = NSPasteboard.general.string(forType: .string) else { return }
-        insert(pasted
-            .replacingOccurrences(of: "\r\n", with: " ")
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\r", with: " "))
+        let normalized = pasted
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        if passthrough {
+            let bytes = Array(normalized.replacingOccurrences(of: "\n", with: "\r").utf8)
+            delegate?.inputLine(self, didSendToShell: bytes, pending: "")
+            return
+        }
+        let line = normalized.hasSuffix("\n") ? String(normalized.dropLast()) : normalized
+        if line.contains("\n") {
+            delegate?.inputLine(self, didPasteMultiline: normalized)
+        } else {
+            insert(line)
+        }
     }
 }

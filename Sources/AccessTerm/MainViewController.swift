@@ -239,6 +239,42 @@ final class MainViewController: NSViewController,
         }
     }
 
+    /// Names the saved-paste scripts in order within this app run. Static so that two
+    /// windows cannot hand out the same name.
+    private static var pasteSequence = 0
+
+    /// A paste with newlines in it. Flattening was wrong for these: newlines carry meaning
+    /// (a heredoc's terminator, a block's body), and fusing them to spaces left zsh waiting
+    /// silently at a continuation prompt with no output and no command-end marker. The text
+    /// is saved verbatim as a script and the command that sources it is put on the line --
+    /// reviewable, correctable, submittable, and the transcript records exactly what ran.
+    /// `source` rather than `zsh`: the paste behaves as if typed, so a cd or an export in
+    /// it affects this shell. Note this is a second adopt() call site (after completion
+    /// hand-back); adopt posts no value change, the standing #12 caveat.
+    func inputLine(_ view: InputLineView, didPasteMultiline text: String) {
+        let ended = text.hasSuffix("\n") ? text : text + "\n"
+        let lineCount = ended.reduce(0) { $1 == "\n" ? $0 + 1 : $0 }
+        MainViewController.pasteSequence += 1
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "AccessTerm-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+        let file = directory.appendingPathComponent(
+            "paste-\(MainViewController.pasteSequence).zsh")
+        do {
+            try FileManager.default.createDirectory(at: directory,
+                                                    withIntermediateDirectories: true)
+            try ended.write(to: file, atomically: true, encoding: .utf8)
+        } catch {
+            announcer.announceNow("Paste failed: could not save it as a script",
+                                  priority: .high)
+            return
+        }
+        let quoted = "'" + file.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let command = "source " + quoted
+        inputLine.adopt(command, caret: command.count)
+        announcer.announceNow("Pasted \(lineCount) lines as a script; Return runs it",
+                              priority: .high)
+    }
+
     /// The input line's own voice: the character or word the caret crossed, what a deletion
     /// removed. It is not a text control, so the system narrates nothing about it, and this is
     /// the only thing that does. Typing is not among the things it says -- whether keystrokes
