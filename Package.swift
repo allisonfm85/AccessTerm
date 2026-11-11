@@ -13,6 +13,11 @@ let package = Package(
             name: "AccessTerm",
             dependencies: [.product(name: "SwiftTerm", package: "SwiftTerm")],
             path: "Sources/AccessTerm"
+        ),
+        .testTarget(
+            name: "AccessTermTests",
+            dependencies: ["AccessTerm"],
+            path: "Tests/AccessTermTests"
         )
     ]
 )

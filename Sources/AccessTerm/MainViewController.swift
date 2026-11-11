@@ -29,6 +29,16 @@ final class MainViewController: NSViewController,
     private var transcript: Transcript { session.transcript }
     /// Non-nil while a full-screen program owns the alternate screen; the text view shows this instead.
     private var screenLines: [String]?
+    /// Says what the cursor lands on while a full-screen program runs. See ScreenNarrator.
+    private var narrator = ScreenNarrator()
+    /// Set while a frame is being handled when VoiceOver is to be told the cursor moved.
+    private var cursorMovedForVoiceOver = false
+    /// The last screen the full-screen program drew, with its cursor, for the commands that
+    /// read the line, word or character at the cursor again.
+    private var lastFrame: ScreenFrame?
+    /// Whether full-screen programs are narrated by cursor position. Off, they are spoken as
+    /// they always were: the rows that changed. Remembered; see Settings.
+    private var tracksCursor: Bool { Settings.trackCursor }
 
     /// What has been spoken for each transcript line, so a redraw of the same words is silent.
     private var news = LineNews()
@@ -111,6 +121,9 @@ final class MainViewController: NSViewController,
         inputLine.font = monoFont
         inputLine.placeholder = "Type a command and press Return"
         inputLine.delegate = self
+        inputLine.bracketedPaste = { [weak self] in
+            self?.session.bracketedPasteMode ?? false
+        }
         inputLine.applicationCursorKeys = { [weak self] in
             self?.session.applicationCursorKeys ?? false
         }
@@ -788,19 +801,68 @@ final class MainViewController: NSViewController,
                 liveLabel.stringValue = "Full-screen program running. The transcript shows its screen."
                 if isKeyTerminalWindow { announcer.announceNow("Full-screen program started") }
             } else if let previous, isKeyTerminalWindow {
-                // Cheap screen-diff: speak rows that changed.
-                var changed: [String] = []
-                for i in 0..<screen.count where i >= previous.count || previous[i] != screen[i] {
-                    changed.append(screen[i])
-                    if changed.count >= 10 { break }
+                // Where the cursor is says what to read. A program the narrator has nothing
+                // to go on for (no cursor, a page turning) gets the row diff.
+                var narration: [String]?
+                let voiceOverReads = Settings.fullScreenReading == .voiceOver
+                if tracksCursor, let frame = update.alternateFrame {
+                    // VoiceOver reading the cursor itself leaves the narrator the modes and
+                    // messages: a second voice on the cursor would talk over it.
+                    narrator.scope = voiceOverReads ? .modesAndMessages : .everything
+                    narrator.speaksSymbols = Settings.speakSymbols
+                    narrator.indentation = Settings.indentation
+                    narrator.repeatThreshold = Settings.repeatThreshold
+                    narration = narrator.narrate(frame)
+                    // The tone goes ahead of the words it belongs to.
+                    if !voiceOverReads, Settings.indentation == .tones, let tone = narrator.lastTone {
+                        ToneSpeaker.play(indent: tone)
+                    }
                 }
-                announcer.enqueue(changed)
+                if narration != nil, voiceOverReads, let frame = update.alternateFrame,
+                   let before = inputLine.screen {
+                    let after = ScreenText(rows: screen, cursorRow: frame.cursorRow, cursorCol: frame.cursorCol)
+                    cursorMovedForVoiceOver = before.cursor != after.cursor
+                        || before.cursorLine != after.cursorLine
+                }
+                if let narration {
+                    if !narration.isEmpty {
+                        announcer.announceNow(narration.joined(separator: "\n"), priority: .high)
+                    }
+                } else {
+                    // Cheap screen-diff: speak rows that changed.
+                    var changed: [String] = []
+                    for i in 0..<screen.count where i >= previous.count || previous[i] != screen[i] {
+                        changed.append(screen[i])
+                        if changed.count >= 10 { break }
+                    }
+                    announcer.enqueue(changed)
+                }
+            }
+            if let frame = update.alternateFrame {
+                lastFrame = frame
+                // The screen is what VoiceOver reads from the input view, for its own
+                // read-line, read-word and read-character commands in either reading mode.
+                inputLine.showScreen(ScreenText(rows: screen, cursorRow: frame.cursorRow,
+                                                cursorCol: frame.cursorCol))
+                if cursorMovedForVoiceOver {
+                    cursorMovedForVoiceOver = false
+                    if isKeyTerminalWindow { inputLine.postCursorMoved() }
+                }
+                // Put the review caret where the program's cursor is, so leaving the input
+                // line to read starts there. Quiet: the narrator is the voice.
+                var offset = 0
+                for row in 0..<min(frame.cursorRow, screen.count) { offset += screen[row].count + 1 }
+                let column = frame.cursorRow < screen.count ? screen[frame.cursorRow].count : 0
+                moveCaret(to: offset + min(frame.cursorCol, column))
             }
             return
         }
 
         if screenLines != nil {
             screenLines = nil
+            narrator.reset()
+            lastFrame = nil
+            inputLine.showScreen(nil)
             inputLine.passthrough = false
             inputLine.placeholder = "Type a command and press Return"
             setText(transcript.text())
@@ -860,7 +922,12 @@ final class MainViewController: NSViewController,
             // words; "Attention" on top of that would be noise. The beep still sounds.
             return
         }
-        let detail = liveText.isEmpty ? "" : " " + liveText
+        // While a full-screen program has the screen, liveText is the shell line from before
+        // it started, which is not what the bell is about, and an editor rings the bell at
+        // every edge of the text. The beep is enough unless asked for more.
+        let fullScreen = screenLines != nil
+        if fullScreen, !Settings.speakBellInFullScreen, isKeyTerminalWindow { return }
+        let detail = (liveText.isEmpty || fullScreen) ? "" : " " + liveText
         if isKeyTerminalWindow {
             announcer.announceNow("Attention." + detail, priority: .high)
         } else {
@@ -919,12 +986,89 @@ final class MainViewController: NSViewController,
     }
 
     @objc func readCurrentLine(_ sender: Any?) {
+        if lastFrame != nil { readCursor(.line); return }
         announcer.announceNow(liveText.isEmpty ? "Current line is empty" : liveText)
+    }
+
+    @objc func readCursorLine(_ sender: Any?) { readCursor(.line) }
+    @objc func readCursorWord(_ sender: Any?) { readCursor(.word) }
+    @objc func readCursorCharacter(_ sender: Any?) { readCursor(.character) }
+    @objc func repeatLastAnnouncement(_ sender: Any?) { announcer.repeatLast() }
+
+    private enum CursorUnit { case line, word, character }
+
+    /// Says the line, word or character at the cursor again: the program's cursor while one
+    /// has the screen, otherwise the input line's caret. Spoken the way the narrator speaks,
+    /// symbols and repeats and indentation per the settings, whichever way the cursor is
+    /// normally read.
+    private func readCursor(_ unit: CursorUnit) {
+        var reader = narrator
+        reader.speaksSymbols = Settings.speakSymbols
+        reader.indentation = Settings.indentation
+        reader.repeatThreshold = Settings.repeatThreshold
+        let said: String
+        if let frame = lastFrame {
+            let reading = reader.reading(of: frame)
+            switch unit {
+            case .line:
+                said = reading.line
+                if let tone = reading.tone, Settings.indentation == .tones { ToneSpeaker.play(indent: tone) }
+            case .word: said = reading.word
+            case .character: said = reading.character
+            }
+        } else {
+            let chars = Array(inputLine.text)
+            switch unit {
+            case .line: said = chars.isEmpty ? "blank" : reader.phrase(inputLine.text)
+            case .word: said = reader.phrase(ScreenNarrator.word(at: inputLine.caret, in: chars))
+            case .character: said = ScreenNarrator.character(at: inputLine.caret, in: chars)
+            }
+        }
+        announcer.announceNow(said)
     }
 
     @objc func toggleSpeakOutput(_ sender: Any?) {
         announcer.enabled.toggle()
         announcer.announceNow(announcer.enabled ? "Speak output on" : "Speak output off")
+    }
+
+    @objc func toggleTrackCursor(_ sender: Any?) {
+        Settings.trackCursor.toggle()
+        narrator.reset()
+        announcer.announceNow(Settings.trackCursor ? "Cursor tracking on" : "Cursor tracking off")
+    }
+
+    @objc func readCursorByAnnouncing(_ sender: Any?) {
+        Settings.fullScreenReading = .announce
+        announcer.announceNow("AccessTerm announces the cursor")
+    }
+
+    @objc func readCursorWithVoiceOver(_ sender: Any?) {
+        Settings.fullScreenReading = .voiceOver
+        announcer.announceNow("VoiceOver reads the cursor")
+    }
+
+    @objc func toggleSpeakSymbols(_ sender: Any?) {
+        Settings.speakSymbols.toggle()
+        announcer.announceNow(Settings.speakSymbols ? "Speak all symbols on" : "Speak all symbols off")
+    }
+
+    @objc func setIndentation(_ sender: NSMenuItem) {
+        let choices: [ScreenNarrator.Indentation] = [.off, .tones, .spoken]
+        guard sender.tag >= 0, sender.tag < choices.count else { return }
+        Settings.indentation = choices[sender.tag]
+        announcer.announceNow(["Indentation off", "Indentation tones", "Indentation spoken"][sender.tag])
+    }
+
+    @objc func setRepeatThreshold(_ sender: NSMenuItem) {
+        Settings.repeatThreshold = sender.tag
+        announcer.announceNow(sender.tag == 0 ? "Repeated symbols not counted"
+                                              : "Count repeated symbols from \(sender.tag)")
+    }
+
+    @objc func toggleSpeakBell(_ sender: Any?) {
+        Settings.speakBellInFullScreen.toggle()
+        announcer.announceNow(Settings.speakBellInFullScreen ? "Spoken bell on" : "Spoken bell off")
     }
 
     @objc func interrupt(_ sender: Any?) {
@@ -954,6 +1098,21 @@ final class MainViewController: NSViewController,
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleSpeakOutput(_:)) {
             menuItem.state = announcer.enabled ? .on : .off
+        }
+        switch menuItem.action {
+        case #selector(toggleTrackCursor(_:)): menuItem.state = Settings.trackCursor ? .on : .off
+        case #selector(readCursorByAnnouncing(_:)):
+            menuItem.state = Settings.fullScreenReading == .announce ? .on : .off
+        case #selector(readCursorWithVoiceOver(_:)):
+            menuItem.state = Settings.fullScreenReading == .voiceOver ? .on : .off
+        case #selector(toggleSpeakSymbols(_:)): menuItem.state = Settings.speakSymbols ? .on : .off
+        case #selector(setIndentation(_:)):
+            let current: Int = [ScreenNarrator.Indentation.off: 0, .tones: 1, .spoken: 2][Settings.indentation] ?? 2
+            menuItem.state = menuItem.tag == current ? .on : .off
+        case #selector(setRepeatThreshold(_:)):
+            menuItem.state = menuItem.tag == Settings.repeatThreshold ? .on : .off
+        case #selector(toggleSpeakBell(_:)): menuItem.state = Settings.speakBellInFullScreen ? .on : .off
+        default: break
         }
         return true
     }

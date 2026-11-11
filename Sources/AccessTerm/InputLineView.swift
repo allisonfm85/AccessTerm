@@ -59,6 +59,8 @@ final class InputLineView: NSView {
     /// application cursor keys, which decides how arrows are encoded. Supplied by the
     /// controller from the live terminal state; never cached here.
     var applicationCursorKeys: () -> Bool = { false }
+    /// Whether the running program has asked for bracketed paste.
+    var bracketedPaste: () -> Bool = { false }
 
     /// What has been typed and not yet sent.
     private(set) var text = "" { didSet { refresh(oldValue != text) } }
@@ -121,7 +123,73 @@ final class InputLineView: NSView {
     /// is stored state, and stored state is one more place a stale line can survive. A
     /// getter can only ever answer with the current text. Same pattern as the transcript
     /// view's quiet window.
-    override func accessibilityValue() -> Any? { text }
+    override func accessibilityValue() -> Any? { screen?.text ?? text }
+
+    // MARK: - The program's screen, for VoiceOver to read
+
+    /// The full-screen program's screen and cursor, while one has the screen. With it the
+    /// view answers as a read-only text area whose selection is the program's cursor, so
+    /// VoiceOver's own read-line, read-word and read-character commands work on the program
+    /// the way they do in any text, and VoiceOver can read the cursor itself, with its own
+    /// punctuation and indentation settings. Nil at a prompt, where this is the command line.
+    private(set) var screen: ScreenText?
+
+    /// Hands over the screen as the program last drew it, or nil when it has gone. Served
+    /// from the getters below, never pushed as a value. Nothing is posted here: whether
+    /// VoiceOver is told the cursor moved is the controller's decision.
+    func showScreen(_ newScreen: ScreenText?) {
+        let hadScreen = screen != nil
+        screen = newScreen
+        if (newScreen != nil) != hadScreen {
+            setAccessibilityRole(newScreen != nil ? .textArea : .staticText)
+        }
+    }
+
+    /// Tells VoiceOver the program's cursor moved, so it reads what is there.
+    func postCursorMoved() {
+        NSAccessibility.post(element: self, notification: .selectedTextChanged)
+    }
+
+    override func accessibilitySelectedTextRange() -> NSRange {
+        guard let screen else { return NSRange(location: caret, length: 0) }
+        return NSRange(location: screen.cursor, length: 0)
+    }
+
+    override func accessibilitySelectedText() -> String? { "" }
+
+    override func accessibilityNumberOfCharacters() -> Int {
+        screen?.length ?? (text as NSString).length
+    }
+
+    override func accessibilityVisibleCharacterRange() -> NSRange {
+        NSRange(location: 0, length: accessibilityNumberOfCharacters())
+    }
+
+    override func accessibilityInsertionPointLineNumber() -> Int {
+        screen?.line(for: screen?.cursor ?? 0) ?? 0
+    }
+
+    override func accessibilityLine(for index: Int) -> Int {
+        screen?.line(for: index) ?? 0
+    }
+
+    override func accessibilityRange(forLine line: Int) -> NSRange {
+        screen?.range(forLine: line) ?? NSRange(location: 0, length: (text as NSString).length)
+    }
+
+    override func accessibilityString(for range: NSRange) -> String? {
+        if let screen { return screen.string(for: range) }
+        return (text as NSString).substring(with: NSIntersectionRange(range, NSRange(location: 0, length: (text as NSString).length)))
+    }
+
+    override func accessibilityAttributedString(for range: NSRange) -> NSAttributedString? {
+        NSAttributedString(string: accessibilityString(for: range) ?? "", attributes: [.font: font])
+    }
+
+    override func accessibilityRange(for index: Int) -> NSRange {
+        let length = accessibilityNumberOfCharacters()
+        return NSRange(location: max(0, min(index, max(0, length - 1))), length: length == 0 ? 0 : 1)
+    }
 
     /// The string index `offset` characters in, clamped.
     private func index(_ offset: Int) -> String.Index {
@@ -463,7 +531,12 @@ final class InputLineView: NSView {
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
         if passthrough {
-            let bytes = Array(normalized.replacingOccurrences(of: "\n", with: "\r").utf8)
+            var bytes = Array(normalized.replacingOccurrences(of: "\n", with: "\r").utf8)
+            // vim and nvim ask for bracketed paste; without the markers a paste into insert
+            // mode is typed, and autoindent runs over it.
+            if bracketedPaste() {
+                bytes = Array("\u{1b}[200~".utf8) + bytes + Array("\u{1b}[201~".utf8)
+            }
             delegate?.inputLine(self, didSendToShell: bytes, pending: "")
             return
         }

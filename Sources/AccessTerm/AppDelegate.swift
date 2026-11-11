@@ -279,6 +279,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                      action: #selector(MainViewController.toggleSpeakOutput(_:)),
                                      keyEquivalent: "s")
         speak.keyEquivalentModifierMask = [.command, .shift]
+        let fullScreenItem = termMenu.addItem(withTitle: "Full-Screen Programs", action: nil, keyEquivalent: "")
+        let fullScreenMenu = NSMenu(title: "Full-Screen Programs")
+        fullScreenMenu.autoenablesItems = true
+        fullScreenMenu.addItem(withTitle: "Track the Cursor",
+                               action: #selector(MainViewController.toggleTrackCursor(_:)), keyEquivalent: "")
+        fullScreenMenu.addItem(.separator())
+        fullScreenMenu.addItem(withTitle: "Announce the Cursor",
+                               action: #selector(MainViewController.readCursorByAnnouncing(_:)), keyEquivalent: "")
+        fullScreenMenu.addItem(withTitle: "Let VoiceOver Read the Cursor",
+                               action: #selector(MainViewController.readCursorWithVoiceOver(_:)), keyEquivalent: "")
+        fullScreenMenu.addItem(.separator())
+        fullScreenMenu.addItem(withTitle: "Speak All Symbols When Announcing",
+                               action: #selector(MainViewController.toggleSpeakSymbols(_:)), keyEquivalent: "")
+        fullScreenMenu.addItem(withTitle: "Speak the Bell",
+                               action: #selector(MainViewController.toggleSpeakBell(_:)), keyEquivalent: "")
+        fullScreenMenu.addItem(.separator())
+        let indentItem = fullScreenMenu.addItem(withTitle: "Indentation", action: nil, keyEquivalent: "")
+        let indentMenu = NSMenu(title: "Indentation")
+        for (tag, title) in ["Not Announced", "Tones", "Spoken (indent 4)"].enumerated() {
+            let item = indentMenu.addItem(withTitle: title,
+                                          action: #selector(MainViewController.setIndentation(_:)), keyEquivalent: "")
+            item.tag = tag
+        }
+        indentItem.submenu = indentMenu
+        let repeatItem = fullScreenMenu.addItem(withTitle: "Count Repeated Symbols", action: nil, keyEquivalent: "")
+        let repeatMenu = NSMenu(title: "Count Repeated Symbols")
+        for threshold in [0, 3, 4, 5, 6, 8, 10, 16] {
+            let item = repeatMenu.addItem(withTitle: threshold == 0 ? "Off" : "From \(threshold) in a row",
+                                          action: #selector(MainViewController.setRepeatThreshold(_:)), keyEquivalent: "")
+            item.tag = threshold
+        }
+        repeatItem.submenu = repeatMenu
+        fullScreenItem.submenu = fullScreenMenu
+        termMenu.addItem(.separator())
+        let readCursorItems: [(String, Selector, String)] = [
+            ("Read Cursor Line", #selector(MainViewController.readCursorLine(_:)), "l"),
+            ("Read Cursor Word", #selector(MainViewController.readCursorWord(_:)), "w"),
+            ("Read Cursor Character", #selector(MainViewController.readCursorCharacter(_:)), "c"),
+            ("Repeat Last Announcement", #selector(MainViewController.repeatLastAnnouncement(_:)), "r"),
+        ]
+        for (title, action, key) in readCursorItems {
+            let item = termMenu.addItem(withTitle: title, action: action, keyEquivalent: key)
+            item.keyEquivalentModifierMask = [.control, .command]
+        }
         termMenu.addItem(.separator())
 
         termMenu.addItem(withTitle: "Interrupt (Control-C)",

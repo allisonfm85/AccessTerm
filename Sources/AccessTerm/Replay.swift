@@ -98,7 +98,18 @@ enum Replay {
             announced.append("completion: \(buffer) (cursor \(cursor))")
         }
 
+        var narrator = ScreenNarrator()
+
         func session(_ session: TerminalSession, didUpdate update: TerminalUpdate) {
+            if let frame = update.alternateFrame {
+                // The UI's rule: the narrator speaks, and a nil leaves the row diff to it.
+                if let speech = narrator.narrate(frame) {
+                    if !speech.isEmpty { announced.append("screen: " + speech.joined(separator: " / ")) }
+                } else {
+                    announced.append("screen: (row diff)")
+                }
+                return
+            }
             guard update.alternateScreen == nil else { return }
             for (index, runs) in update.editStyles.enumerated() where index < update.edits.count {
                 recordStyles(line: update.edits[index].line, runs: runs)
