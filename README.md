@@ -465,6 +465,21 @@ are likely to use behave well with a screen reader without you configuring anyth
   blocks](#command-blocks). Your original value is kept in `ACCESSTERM_USER_ZDOTDIR` and
   restored before your `.zshrc` finishes, so anything you launch sees the value you set.
 
+### tmux and screen
+
+tmux and screen keep the terminal on its full-screen view for the whole session, so a plain shell
+inside them is read by the same rules as an editor. For a shell that means:
+
+- Typing at the prompt is silent, as it is outside tmux. What a shell redraws after the cursor (a
+  suggestion, syntax colors) does not make it speak, and neither does having run vim in the same
+  tmux earlier.
+- After Return, the command's output is read, up to ten lines and then a count of the rest,
+  followed by the new prompt. This is the same every time, at the top of the screen or at the
+  bottom of a scrolled one.
+- Output that scrolls past between two reads is gone from the screen, because the terminal keeps no
+  scrollback for a full-screen view: tmux keeps it. Press the tmux prefix and `[` (copy mode) to
+  review it; copy mode is read by the cursor like any editor.
+
 ## Diagnostics
 
 This section is for tracking down bugs in AccessTerm itself. You can skip it unless you are

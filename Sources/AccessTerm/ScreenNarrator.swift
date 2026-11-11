@@ -119,11 +119,25 @@ struct ScreenNarrator {
 
         let cursorMoved = before.cursorRow != frame.cursorRow || before.cursorCol != frame.cursorCol
 
+        // A shell in a multiplexer (tmux, screen) is a full-screen program to the terminal:
+        // its commands scroll the screen. Rows that appeared above the cursor, with nothing
+        // but blank rows below it, are the output of what was just run.
+        let output = (frame.cursorRow == last && Self.isCommandLine(lastRow))
+            ? nil : Self.newOutput(from: before, to: frame)
+
+        // A screen mostly replaced, with no mode marker on it, is not the vim whose mode was
+        // last seen: it quit, or another program has the screen. Forget the mode, so typing at
+        // the shell prompt that follows is not read as vim's normal mode.
+        if mode == .normal, Self.mode(in: lastRow) == nil {
+            let changed = zip(before.rows, frame.rows).filter { $0 != $1 }.count
+            if changed * 2 > frame.rows.count { modeKnown = false }
+        }
+
         // Rows other than the cursor's and the last that changed. Several of them while the
         // cursor stays put on a row that did not change is a page turning (a pager, with its
         // cursor on the prompt), not an edit: leave that to the row diff. An edit that
         // shifts the lines (dd) changes the cursor's own row, and is read below.
-        if !cursorMoved, before.rows[frame.cursorRow] == frame.rows[frame.cursorRow] {
+        if output == nil, !cursorMoved, before.rows[frame.cursorRow] == frame.rows[frame.cursorRow] {
             var changed = 0
             for row in 0..<last where row != frame.cursorRow && before.rows[row] != frame.rows[row] {
                 changed += 1
@@ -162,7 +176,22 @@ struct ScreenNarrator {
             }
         }
 
+        if let output {
+            let shown = output.rows.prefix(Self.outputLimit)
+            spoken += shown.map { phrase($0) }
+            if output.rows.count > shown.count {
+                spoken.append("and \(output.rows.count - shown.count) more lines")
+            }
+        }
+
         if scope == .modesAndMessages { return spoken }
+
+        // A command was run (the line was committed and the screen scrolled or the cursor
+        // went down): the new line is read whole, whatever it looks like next to the old one.
+        if let output, output.committed {
+            spoken.append(lineUtterance(Self.logicalLine(in: frame).text))
+            return spoken
+        }
 
         // Where the cursor is.
         let was = Self.logicalLine(in: before)
@@ -195,6 +224,51 @@ struct ScreenNarrator {
             spoken.append(lineUtterance(now.text))
         }
         return spoken
+    }
+
+    // MARK: - Terminal output
+
+    /// How many rows of output are read out; the rest are counted.
+    static let outputLimit = 10
+
+    /// The rows of output that arrived between two frames of a screen that works like a
+    /// terminal, and whether a line was committed to get there. nil when it does not.
+    ///
+    /// Terminal-like means everything below the cursor is blank, which a pager's or an
+    /// editor's screen is not (`~` filler, text, a status line). The old frame is matched
+    /// against the new one allowing for the screen having scrolled by some rows; a row above
+    /// the cursor that is not the old row it lines up with is new.
+    static func newOutput(from before: ScreenFrame, to frame: ScreenFrame) -> (rows: [String], committed: Bool)? {
+        let count = frame.rows.count
+        guard count == before.rows.count, frame.cursorRow > 0, frame.cursorRow < count else { return nil }
+        // The last row is where a program keeps its own messages, so it is not "below".
+        for row in (frame.cursorRow + 1)..<max(frame.cursorRow + 1, count - 1)
+        where !frame.rows[row].trimmingCharacters(in: .whitespaces).isEmpty { return nil }
+
+        // Nothing to line up on: an empty row, or the `~` an editor fills its screen with.
+        func blank(_ row: String) -> Bool {
+            let trimmed = row.trimmingCharacters(in: .whitespaces)
+            return trimmed.isEmpty || trimmed == "~" || trimmed == "@"
+        }
+        var bestShift = 0, bestMatches = 0
+        for shift in 0..<count {
+            var matches = 0
+            for index in 0..<min(count - shift, frame.cursorRow)
+            where !blank(frame.rows[index]) && frame.rows[index] == before.rows[index + shift] {
+                matches += 1
+            }
+            if matches > bestMatches { bestMatches = matches; bestShift = shift }
+        }
+        guard bestMatches > 0 else { return nil }
+
+        var rows: [String] = []
+        for index in 0..<frame.cursorRow where !blank(frame.rows[index]) {
+            let was = index + bestShift < count ? before.rows[index + bestShift] : ""
+            if was != frame.rows[index] { rows.append(frame.rows[index].trimmingCharacters(in: .whitespaces)) }
+        }
+        let committed = bestShift > 0 || frame.cursorRow > before.cursorRow
+        guard committed || !rows.isEmpty else { return nil }
+        return (rows, committed)
     }
 
     // MARK: - Saying things
@@ -374,6 +448,10 @@ struct ScreenNarrator {
         if newOffset > oldOffset {
             let n = newOffset - oldOffset
             guard typing || (mode == nil && n == 1), oldOffset <= old.count else { return false }
+            // What follows the cursor is the program's to redraw (a suggestion, syntax
+            // colors, a right-hand prompt): typed text is what is new before the cursor.
+            if oldOffset <= old.count, newOffset <= new.count,
+               Array(new[..<oldOffset]) == Array(old[..<oldOffset]) { return true }
             // Inserted.
             if new.count == old.count + n,
                Array(new[..<oldOffset]) == Array(old[..<oldOffset]),
