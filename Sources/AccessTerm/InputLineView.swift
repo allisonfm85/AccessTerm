@@ -390,7 +390,11 @@ final class InputLineView: NSView {
     private func describing(_ crossed: String) -> String {
         if crossed.isEmpty { return "" }
         if crossed.count > 60 { return "\(crossed.count) characters" }
-        guard crossed.trimmingCharacters(in: .whitespaces).isEmpty else { return crossed }
+        guard crossed.trimmingCharacters(in: .whitespaces).isEmpty else {
+            // VoiceOver drops most punctuation from an announcement, so a flag's "-" would be
+            // crossed in silence. Name the symbols, as the full-screen path does.
+            return Settings.speakSymbols ? SymbolSpeller.spoken(crossed) : crossed
+        }
         return crossed.count == 1 ? "space" : "\(crossed.count) spaces"
     }
 
