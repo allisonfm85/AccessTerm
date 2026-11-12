@@ -1071,6 +1071,13 @@ final class MainViewController: NSViewController,
         announcer.announceNow(Settings.speakBellInFullScreen ? "Spoken bell on" : "Spoken bell off")
     }
 
+    @objc func toggleViCommandLine(_ sender: Any?) {
+        Settings.viCommandLine.toggle()
+        announcer.announceNow(Settings.viCommandLine
+            ? "Vi-style command line on. Press Escape for normal mode."
+            : "Vi-style command line off")
+    }
+
     @objc func interrupt(_ sender: Any?) {
         session.send(bytes: [0x03])
     }
@@ -1112,6 +1119,7 @@ final class MainViewController: NSViewController,
         case #selector(setRepeatThreshold(_:)):
             menuItem.state = menuItem.tag == Settings.repeatThreshold ? .on : .off
         case #selector(toggleSpeakBell(_:)): menuItem.state = Settings.speakBellInFullScreen ? .on : .off
+        case #selector(toggleViCommandLine(_:)): menuItem.state = Settings.viCommandLine ? .on : .off
         default: break
         }
         return true

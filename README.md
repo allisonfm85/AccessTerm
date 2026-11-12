@@ -282,6 +282,39 @@ work from anywhere in the window.
 The Terminal menu also has "Send Escape" and "Send Shift-Tab", for when a menu is easier than
 a key combination.
 
+#### Vi-style editing of the command line
+
+**Terminal > Vi-Style Command Line Editing** (off by default, and remembered) makes the command
+line modal, like vi's. Off, nothing above changes. On, the line starts in insert mode, which is
+the line as described above, and **Escape** (no longer sent to the program) switches to normal
+mode: it says "Normal mode", the caret moves onto the last character you typed and is drawn as a
+block. **i a I A** go back to insert mode and say "Insert mode". **Return** sends the line from
+either mode and the next line starts in insert mode.
+
+In normal mode, with an optional count in front (`3w`, `2x`):
+
+| Keys | What they do, and what is said |
+| --- | --- |
+| `h` `l` | Left and right. The character landed on |
+| `0` `^` `$` | Start of line, first non-blank, end of line. The character landed on |
+| `w` `b` `e` | Words by vi's rules: a run of letters, digits and `_`, or a run of other symbols. The word landed on |
+| `W` `B` `E` | Words as runs of non-blanks. The word landed on |
+| `f` `F` `t` `T` + a character, `;` `,` | Find a character on the line, and repeat it either way |
+| `x` `X` `D` | Delete the character, the one before it, to the end. Says what was deleted |
+| `d` `c` `y` + a motion | Delete, change or yank what the motion covers; `dd` `cc` `yy` take the whole line. `cw` works like `ce`, as in vi |
+| `C` `s` `S` `Y` | Change to the end, change a character, change the line, yank the line |
+| `r` + a character, `~` | Replace a character; flip the case |
+| `p` `P` | Put what was last deleted or yanked, after or before the caret |
+| `u`, Control-R | Undo and redo. Typing in insert mode counts as one change |
+| `k` `j` | The shell's history, older and newer, like Up and Down |
+| Escape | Cancels a half-typed command |
+
+Backspace is `h` and Forward Delete is `x` in normal mode, and the arrows, Home, End, Tab and
+Return keep their usual jobs. A key that means nothing here beeps. This is a single line, so
+there is no visual mode, no `.` repeat and no search; `j` and `k` are how you reach earlier
+commands. Edits are spoken as one announcement, for example "hello deleted, Insert mode" after
+`cw`.
+
 ## Programs that redraw the screen
 
 A terminal is really a grid of character cells, and plenty of programs treat it as one: they

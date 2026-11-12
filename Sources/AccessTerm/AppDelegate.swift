@@ -279,6 +279,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                      action: #selector(MainViewController.toggleSpeakOutput(_:)),
                                      keyEquivalent: "s")
         speak.keyEquivalentModifierMask = [.command, .shift]
+        termMenu.addItem(withTitle: "Vi-Style Command Line Editing",
+                         action: #selector(MainViewController.toggleViCommandLine(_:)), keyEquivalent: "")
         let fullScreenItem = termMenu.addItem(withTitle: "Full-Screen Programs", action: nil, keyEquivalent: "")
         let fullScreenMenu = NSMenu(title: "Full-Screen Programs")
         fullScreenMenu.autoenablesItems = true

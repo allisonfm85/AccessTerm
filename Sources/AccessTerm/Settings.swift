@@ -54,4 +54,11 @@ enum Settings {
         get { defaults.object(forKey: "repeatThreshold") as? Int ?? 4 }
         set { defaults.set(max(0, newValue), forKey: "repeatThreshold") }
     }
+
+    /// vi-style modal editing on the command line: Escape for normal mode, then motions and
+    /// operators. Off, the line behaves exactly as it always has.
+    static var viCommandLine: Bool {
+        get { bool("viCommandLine", default: false) }
+        set { defaults.set(newValue, forKey: "viCommandLine") }
+    }
 }
