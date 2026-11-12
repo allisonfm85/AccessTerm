@@ -17,6 +17,7 @@ It needs macOS 13 (Ventura) or later.
 - [Windows and tabs](#windows-and-tabs)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Programs that redraw the screen](#programs-that-redraw-the-screen)
+- [Editors: vim and nvim](#editors-vim-and-nvim)
 - [Command blocks](#command-blocks)
 - [What gets spoken](#what-gets-spoken)
 - [Settings applied automatically](#settings-applied-automatically)
@@ -281,6 +282,39 @@ work from anywhere in the window.
 The Terminal menu also has "Send Escape" and "Send Shift-Tab", for when a menu is easier than
 a key combination.
 
+#### Vi-style editing of the command line
+
+**Terminal > Vi-Style Command Line Editing** (off by default, and remembered) makes the command
+line modal, like vi's. Off, nothing above changes. On, the line starts in insert mode, which is
+the line as described above, and **Escape** (no longer sent to the program) switches to normal
+mode: it says "Normal mode", the caret moves onto the last character you typed and is drawn as a
+block. **i a I A** go back to insert mode and say "Insert mode". **Return** sends the line from
+either mode and the next line starts in insert mode.
+
+In normal mode, with an optional count in front (`3w`, `2x`):
+
+| Keys | What they do, and what is said |
+| --- | --- |
+| `h` `l` | Left and right. The character landed on |
+| `0` `^` `$` | Start of line, first non-blank, end of line. The character landed on |
+| `w` `b` `e` | Words by vi's rules: a run of letters, digits and `_`, or a run of other symbols. The word landed on |
+| `W` `B` `E` | Words as runs of non-blanks. The word landed on |
+| `f` `F` `t` `T` + a character, `;` `,` | Find a character on the line, and repeat it either way |
+| `x` `X` `D` | Delete the character, the one before it, to the end. Says what was deleted |
+| `d` `c` `y` + a motion | Delete, change or yank what the motion covers; `dd` `cc` `yy` take the whole line. `cw` works like `ce`, as in vi |
+| `C` `s` `S` `Y` | Change to the end, change a character, change the line, yank the line |
+| `r` + a character, `~` | Replace a character; flip the case |
+| `p` `P` | Put what was last deleted or yanked, after or before the caret |
+| `u`, Control-R | Undo and redo. Typing in insert mode counts as one change |
+| `k` `j` | The shell's history, older and newer, like Up and Down |
+| Escape | Cancels a half-typed command |
+
+Backspace is `h` and Forward Delete is `x` in normal mode, and the arrows, Home, End, Tab and
+Return keep their usual jobs. A key that means nothing here beeps. This is a single line, so
+there is no visual mode, no `.` repeat and no search; `j` and `k` are how you reach earlier
+commands. Edits are spoken as one announcement, for example "hello deleted, Insert mode" after
+`cw`.
+
 ## Programs that redraw the screen
 
 A terminal is really a grid of character cells, and plenty of programs treat it as one: they
@@ -387,7 +421,69 @@ one thing for them to work on.
   screen reader mode rings the bell when it wants input, so this is how you know it is your
   turn.
 - Full-screen programs (vim, htop, an attached Claude session) switch the transcript to a
-  screen view and speak rows as they change. This is still basic.
+  screen view. Programs that show a cursor (vim, nvim, nano, less) are spoken by where the
+  cursor is, see [Editors: vim and nvim](#editors-vim-and-nvim); the rest speak the rows
+  that changed.
+
+## Editors: vim and nvim
+
+While a full-screen program owns the screen, keys go straight to it, so modal editing works
+as it does in any terminal, including in vim or nvim run over `ssh` (AccessTerm follows what
+the terminal is told, not which program is running). What is spoken follows the cursor:
+
+| What you do | What is spoken |
+| --- | --- |
+| Move one character (`h`, `l`) | The character under the cursor (`space` for a blank, symbols by name) |
+| Move along the line (`w`, `b`, `e`, `0`, `$`, `f`) | The word the cursor is on |
+| Change line (`j`, `k`, `G`, `gg`, `/` search, `:123`, scrolling, `dd`, undo) | The whole new line (`blank` for an empty one) |
+| Edit at the cursor (`x`, `r`, `dw`) | The character or word now under the cursor |
+| Change mode | "Insert mode", "Visual mode", "Normal mode" (when the mode shows on the last row) |
+| A message on the last row (`E486: Pattern not found`) | The message |
+| Start a command or search (`:`, `/`, `?`) | "Command", "Search forward" or "Search backward" |
+| Move in the command line (arrows, Option-arrows, Home, End) | The character or word crossed |
+| Delete in the command line | What was deleted |
+| Recall history or complete with Tab in the command line | The whole new text |
+| Type in insert mode, or on the command line | Nothing: VoiceOver's key echo covers typing |
+
+A number column (`set number`) is left off, and a wrapped line is read as one line. Programs
+that hide their cursor (htop), and a pager turning a page, still speak the rows that changed.
+Everything about this is under **Terminal > Full-Screen Programs**, and is remembered between
+launches:
+
+- **Track the Cursor** turns cursor speech off, which brings back row-by-row speech for every
+  full-screen program.
+- **Announce the Cursor** (the default) has AccessTerm speak what the cursor lands on, as in
+  the table. **Let VoiceOver Read the Cursor** instead tells VoiceOver the cursor moved, so
+  VoiceOver reads the character, word or line itself, with your own punctuation level and
+  indentation tones; AccessTerm then only speaks mode changes and messages. If it ever
+  misbehaves, switch back to Announce.
+- **Speak All Symbols When Announcing** (on by default) says every symbol by name, so `:`,
+  `.`, `?` and `(` are heard as "colon", "dot", "question mark" and "open paren". The leading
+  indentation is not spoken.
+- **Indentation** chooses how a change of indentation is made known when a whole line is
+  announced: **Spoken** (the default) says "indent 4" when a line's indent differs from the
+  last line read, and "no indent" when it drops back; **Tones** plays a short tone before each
+  indented line, higher for deeper; **Not Announced** says nothing. In Let VoiceOver Read the
+  Cursor mode VoiceOver's own indentation setting applies instead.
+- **Count Repeated Symbols** says a long run of one symbol as a count: a line of 50 `#` is
+  "50 hash". Choose the length a run must reach (3, 4 by default, 5, 6, 8, 10, 16) or turn it
+  off. Letters, digits and blanks are never counted, and one character read on its own is
+  always said alone. This is for full-screen programs only; the transcript is untouched.
+- **Speak the Bell** is off by default: an editor rings the bell at every edge of the text, so
+  in a full-screen program it is the beep alone. Turn it on to hear "Attention" as well.
+
+To hear something again, in any full-screen program (and at the prompt): **Control-Command-L**
+reads the line the cursor is on, **Control-Command-W** the word, **Control-Command-C** the
+character, and **Control-Command-R** repeats the last thing AccessTerm said. They are in the
+Terminal menu, and they never reach the program. Command-Shift-L reads the cursor line too.
+
+In either mode, VoiceOver's own read-line, read-word and read-character commands (VO+L, VO+W,
+VO+C) read the line, word and character at the program's cursor. Pasting into a program that
+asked for bracketed paste (vim and nvim do) is sent as a paste, so autoindent does not run over
+it.
+
+Not done yet: reading a visual selection, and `showmode` has to be on (it is by default) for
+mode changes to be announced.
 
 ## Settings applied automatically
 
@@ -401,6 +497,21 @@ are likely to use behave well with a screen reader without you configuring anyth
 - `ZDOTDIR` points at the app's own zsh startup files, which source yours. See [Command
   blocks](#command-blocks). Your original value is kept in `ACCESSTERM_USER_ZDOTDIR` and
   restored before your `.zshrc` finishes, so anything you launch sees the value you set.
+
+### tmux and screen
+
+tmux and screen keep the terminal on its full-screen view for the whole session, so a plain shell
+inside them is read by the same rules as an editor. For a shell that means:
+
+- Typing at the prompt is silent, as it is outside tmux. What a shell redraws after the cursor (a
+  suggestion, syntax colors) does not make it speak, and neither does having run vim in the same
+  tmux earlier.
+- After Return, the command's output is read, up to ten lines and then a count of the rest,
+  followed by the new prompt. This is the same every time, at the top of the screen or at the
+  bottom of a scrolled one.
+- Output that scrolls past between two reads is gone from the screen, because the terminal keeps no
+  scrollback for a full-screen view: tmux keeps it. Press the tmux prefix and `[` (copy mode) to
+  review it; copy mode is read by the cursor like any editor.
 
 ## Diagnostics
 

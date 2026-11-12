@@ -24,6 +24,9 @@ struct TerminalUpdate {
     var liveText: String = ""
     /// Non-nil while a full-screen program (vim, htop, an attached session) owns the alternate screen.
     var alternateScreen: [String]?
+    /// The alternate screen with its cursor, for narrating by cursor position. Set together
+    /// with alternateScreen.
+    var alternateFrame: ScreenFrame?
     /// Whether a command was running when this batch was read. It is what tells a live line
     /// that is a program's question -- "Path to local repository (default: .)", which never
     /// ends in a newline and so never becomes a line -- from the shell's own prompt, which
@@ -314,6 +317,10 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         delegate?.sessionDidRingBell(self)
     }
 
+    func showCursor(source: Terminal) { cursorVisible = true }
+
+    func hideCursor(source: Terminal) { cursorVisible = false }
+
     func bufferActivated(source: Terminal) {
         scheduleUpdate()
     }
@@ -486,6 +493,12 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
     /// sent to it must be encoded to match -- ESC O A when set, ESC [ A when not. vim sets
     /// it, nano does not, and the mode can change at any write, so this is read at the
     /// keystroke, never stored.
+    /// Whether the program has the cursor shown (DECTCEM). Editors show it; htop hides it.
+    private var cursorVisible = true
+
+    /// Whether the program has asked for bracketed paste, so a paste can be marked as one.
+    var bracketedPasteMode: Bool { terminal?.bracketedPasteMode ?? false }
+
     var applicationCursorKeys: Bool { terminal?.applicationCursor ?? false }
 
     /// What a program that labels its own turns prints the question behind.
@@ -795,12 +808,26 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         // Full-screen programs: hand the whole screen to the UI, build no lines.
         if terminal.isCurrentBufferAlternate {
             var screen: [String] = []
-            for r in 0..<terminal.rows {
+            var wrapped: [Bool] = []
+            let rows = terminal.rows
+            for r in 0..<rows {
                 guard let line = terminal.getLine(row: r) else { break }
-                screen.append(lineText(line, trimRight: true))
+                // A row a wrapped row continues onto keeps its trailing blanks: they are
+                // real characters there.
+                let continues = r + 1 < rows && (terminal.getLine(row: r + 1)?.isWrapped ?? false)
+                screen.append(lineText(line, trimRight: !continues))
+                wrapped.append(line.isWrapped)
             }
             terminal.clearUpdateRange()
-            delegate?.session(self, didUpdate: TerminalUpdate(alternateScreen: screen))
+            var update = TerminalUpdate(alternateScreen: screen.map { row in
+                var trimmed = row
+                while trimmed.hasSuffix(" ") { trimmed.removeLast() }
+                return trimmed
+            })
+            update.alternateFrame = ScreenFrame(rows: screen, wrapped: wrapped,
+                                                cursorRow: buffer.y, cursorCol: buffer.x,
+                                                cursorVisible: cursorVisible, cols: terminal.cols)
+            delegate?.session(self, didUpdate: update)
             return
         }
 

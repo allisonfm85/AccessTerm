@@ -73,7 +73,15 @@ final class Announcer {
         post(text, priority: .medium)
     }
 
+    /// The last thing posted, for saying again on request.
+    private(set) var lastSpoken = ""
+
+    func repeatLast() {
+        post(lastSpoken.isEmpty ? "Nothing to repeat" : lastSpoken, priority: .high)
+    }
+
     private func post(_ text: String, priority: NSAccessibilityPriorityLevel) {
+        if text != "Nothing to repeat" { lastSpoken = text }
         if let sink {
             sink(text)
             return

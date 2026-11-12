@@ -50,6 +50,7 @@ final class InputLineView: NSView {
     var passthrough = false {
         didSet {
             guard passthrough != oldValue else { return }
+            vi.reset()
             setAccessibilityLabel(passthrough ? "Program input" : "Command line")
             needsDisplay = true
         }
@@ -59,6 +60,11 @@ final class InputLineView: NSView {
     /// application cursor keys, which decides how arrows are encoded. Supplied by the
     /// controller from the live terminal state; never cached here.
     var applicationCursorKeys: () -> Bool = { false }
+    /// Whether the running program has asked for bracketed paste.
+    var bracketedPaste: () -> Bool = { false }
+
+    /// vi-style editing of the line, when Terminal > Vi-Style Command Line Editing is on.
+    private var vi = ViLineEditor()
 
     /// What has been typed and not yet sent.
     private(set) var text = "" { didSet { refresh(oldValue != text) } }
@@ -109,6 +115,7 @@ final class InputLineView: NSView {
     func adopt(_ newText: String, caret newCaret: Int) {
         text = newText
         caret = max(0, min(newCaret, newText.count))
+        clampForNormalMode()
     }
 
     private func refresh(_ changed: Bool) {
@@ -121,7 +128,73 @@ final class InputLineView: NSView {
     /// is stored state, and stored state is one more place a stale line can survive. A
     /// getter can only ever answer with the current text. Same pattern as the transcript
     /// view's quiet window.
-    override func accessibilityValue() -> Any? { text }
+    override func accessibilityValue() -> Any? { screen?.text ?? text }
+
+    // MARK: - The program's screen, for VoiceOver to read
+
+    /// The full-screen program's screen and cursor, while one has the screen. With it the
+    /// view answers as a read-only text area whose selection is the program's cursor, so
+    /// VoiceOver's own read-line, read-word and read-character commands work on the program
+    /// the way they do in any text, and VoiceOver can read the cursor itself, with its own
+    /// punctuation and indentation settings. Nil at a prompt, where this is the command line.
+    private(set) var screen: ScreenText?
+
+    /// Hands over the screen as the program last drew it, or nil when it has gone. Served
+    /// from the getters below, never pushed as a value. Nothing is posted here: whether
+    /// VoiceOver is told the cursor moved is the controller's decision.
+    func showScreen(_ newScreen: ScreenText?) {
+        let hadScreen = screen != nil
+        screen = newScreen
+        if (newScreen != nil) != hadScreen {
+            setAccessibilityRole(newScreen != nil ? .textArea : .staticText)
+        }
+    }
+
+    /// Tells VoiceOver the program's cursor moved, so it reads what is there.
+    func postCursorMoved() {
+        NSAccessibility.post(element: self, notification: .selectedTextChanged)
+    }
+
+    override func accessibilitySelectedTextRange() -> NSRange {
+        guard let screen else { return NSRange(location: caret, length: 0) }
+        return NSRange(location: screen.cursor, length: 0)
+    }
+
+    override func accessibilitySelectedText() -> String? { "" }
+
+    override func accessibilityNumberOfCharacters() -> Int {
+        screen?.length ?? (text as NSString).length
+    }
+
+    override func accessibilityVisibleCharacterRange() -> NSRange {
+        NSRange(location: 0, length: accessibilityNumberOfCharacters())
+    }
+
+    override func accessibilityInsertionPointLineNumber() -> Int {
+        screen?.line(for: screen?.cursor ?? 0) ?? 0
+    }
+
+    override func accessibilityLine(for index: Int) -> Int {
+        screen?.line(for: index) ?? 0
+    }
+
+    override func accessibilityRange(forLine line: Int) -> NSRange {
+        screen?.range(forLine: line) ?? NSRange(location: 0, length: (text as NSString).length)
+    }
+
+    override func accessibilityString(for range: NSRange) -> String? {
+        if let screen { return screen.string(for: range) }
+        return (text as NSString).substring(with: NSIntersectionRange(range, NSRange(location: 0, length: (text as NSString).length)))
+    }
+
+    override func accessibilityAttributedString(for range: NSRange) -> NSAttributedString? {
+        NSAttributedString(string: accessibilityString(for: range) ?? "", attributes: [.font: font])
+    }
+
+    override func accessibilityRange(for index: Int) -> NSRange {
+        let length = accessibilityNumberOfCharacters()
+        return NSRange(location: max(0, min(index, max(0, length - 1))), length: length == 0 ? 0 : 1)
+    }
 
     /// The string index `offset` characters in, clamped.
     private func index(_ offset: Int) -> String.Index {
@@ -154,10 +227,18 @@ final class InputLineView: NSView {
         guard window?.firstResponder === self else { return }
         let before = String(text[text.startIndex..<index(caret)])
         let width = before.isEmpty ? 0 : (before as NSString).size(withAttributes: attributes).width
-        let bar = NSRect(x: origin.x + width, y: origin.y,
-                         width: 1, height: ceil(font.ascender - font.descender))
-        NSColor.textColor.setFill()
-        bar.fill()
+        let height = ceil(font.ascender - font.descender)
+        if inViNormalMode {
+            // A block over the character the caret is on, so normal mode can be seen.
+            let under = caret < text.count ? String(text[index(caret)]) : "m"
+            let block = NSRect(x: origin.x + width, y: origin.y,
+                               width: max(1, (under as NSString).size(withAttributes: attributes).width), height: height)
+            NSColor.textColor.withAlphaComponent(0.35).setFill()
+            block.fill()
+        } else {
+            NSColor.textColor.setFill()
+            NSRect(x: origin.x + width, y: origin.y, width: 1, height: height).fill()
+        }
     }
 
     // MARK: - Focus
@@ -220,9 +301,16 @@ final class InputLineView: NSView {
             return
         }
 
+        if Settings.viCommandLine {
+            if handleVi(event, flags: flags) { return }
+        } else if vi.mode == .normal {
+            vi.reset()
+        }
+
         switch event.keyCode {
         case InputLineView.returnKey, InputLineView.enterKey:
             let submitted = text
+            vi.reset()
             // Emptied first, and in silence, so that nothing can describe what was there.
             clear()
             delegate?.inputLine(self, didSubmit: submitted)
@@ -255,6 +343,77 @@ final class InputLineView: NSView {
         default:
             insert(event.characters ?? "")
         }
+        clampForNormalMode()
+    }
+
+    // MARK: - vi-style editing
+
+    /// Whether the line is in vi normal mode, where the caret is on a character, not after it.
+    private var inViNormalMode: Bool { Settings.viCommandLine && vi.mode == .normal }
+
+    private func clampForNormalMode() {
+        guard inViNormalMode else { return }
+        caret = max(0, min(caret, text.count - 1))
+    }
+
+    /// Handles a key for vi-style editing. True when the key was taken. Insert mode is the
+    /// line as it has always been, so only Escape is taken there; in normal mode everything
+    /// is, except what has no vi meaning here (Return, the arrows, Tab), which keeps working.
+    private func handleVi(_ event: NSEvent, flags: NSEvent.ModifierFlags) -> Bool {
+        var characters = Array(text)
+        var position = caret
+        if vi.mode == .insert {
+            guard event.keyCode == InputLineView.escape else { return false }
+            let effects = vi.escape(text: characters, caret: &position)
+            caret = position
+            report(effects)
+            return true
+        }
+
+        var key: Character
+        switch event.keyCode {
+        case InputLineView.returnKey, InputLineView.enterKey, InputLineView.left, InputLineView.right,
+             InputLineView.home, InputLineView.end, InputLineView.up, InputLineView.down, InputLineView.tab:
+            return false
+        case InputLineView.escape:
+            report(vi.escape(text: characters, caret: &position))
+            return true
+        case InputLineView.deleteKey: key = "h"
+        case InputLineView.forwardDelete: key = "x"
+        default:
+            if flags.contains(.control) {
+                guard event.charactersIgnoringModifiers?.lowercased() == "r" else { return true }
+                key = "\u{12}"
+            } else {
+                guard let first = event.characters?.first,
+                      first.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0)
+                          && !(0xF700...0xF8FF).contains($0.value) }) else { return true }
+                key = first
+            }
+        }
+        let effects = vi.normal(key, text: &characters, caret: &position)
+        let edited = String(characters)
+        if edited != text { text = edited }
+        caret = position
+        report(effects)
+        return true
+    }
+
+    /// Says what a vi command did, as one announcement: a second would cut the first off.
+    private func report(_ effects: [ViLineEditor.Effect]) {
+        var phrases: [String] = []
+        for effect in effects {
+            switch effect {
+            case .say(let said): phrases.append(describing(said))
+            case .message(let message): phrases.append(message)
+            case .deleted(let gone): phrases.append(describing(gone) + " deleted")
+            case .yanked(let taken): phrases.append("yanked " + describing(taken))
+            case .pasted(let put): phrases.append("pasted " + describing(put))
+            case .history(let older): sendToShell(older ? [0x1b, 0x5b, 0x41] : [0x1b, 0x5b, 0x42])
+            case .invalid: NSSound.beep()
+            }
+        }
+        announce(phrases.joined(separator: ", "))
     }
 
     // MARK: - Editing
@@ -272,13 +431,20 @@ final class InputLineView: NSView {
             }
         }
         guard !typed.isEmpty else { return }
+        noteViEdit()
         let at = caret
         text.insert(contentsOf: typed, at: index(at))
         caret = at + typed.count
     }
 
+    private func noteViEdit() {
+        guard Settings.viCommandLine else { return }
+        vi.noteInsertEdit(text: Array(text), caret: caret)
+    }
+
     private func deleteBackward() {
         guard caret > 0 else { return }
+        noteViEdit()
         let position = index(caret - 1)
         let removed = text[position]
         let target = caret - 1
@@ -291,6 +457,7 @@ final class InputLineView: NSView {
 
     private func deleteForward() {
         guard caret < text.count else { return }
+        noteViEdit()
         let position = index(caret)
         let removed = text[position]
         text.remove(at: position)
@@ -322,7 +489,11 @@ final class InputLineView: NSView {
     private func describing(_ crossed: String) -> String {
         if crossed.isEmpty { return "" }
         if crossed.count > 60 { return "\(crossed.count) characters" }
-        guard crossed.trimmingCharacters(in: .whitespaces).isEmpty else { return crossed }
+        guard crossed.trimmingCharacters(in: .whitespaces).isEmpty else {
+            // VoiceOver drops most punctuation from an announcement, so a flag's "-" would be
+            // crossed in silence. Name the symbols, as the full-screen path does.
+            return Settings.speakSymbols ? SymbolSpeller.spoken(crossed) : crossed
+        }
         return crossed.count == 1 ? "space" : "\(crossed.count) spaces"
     }
 
@@ -463,7 +634,12 @@ final class InputLineView: NSView {
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
         if passthrough {
-            let bytes = Array(normalized.replacingOccurrences(of: "\n", with: "\r").utf8)
+            var bytes = Array(normalized.replacingOccurrences(of: "\n", with: "\r").utf8)
+            // vim and nvim ask for bracketed paste; without the markers a paste into insert
+            // mode is typed, and autoindent runs over it.
+            if bracketedPaste() {
+                bytes = Array("\u{1b}[200~".utf8) + bytes + Array("\u{1b}[201~".utf8)
+            }
             delegate?.inputLine(self, didSendToShell: bytes, pending: "")
             return
         }
