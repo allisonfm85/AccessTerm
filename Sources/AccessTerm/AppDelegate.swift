@@ -284,11 +284,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fullScreenMenu.autoenablesItems = true
         fullScreenMenu.addItem(withTitle: "Track the Cursor",
                                action: #selector(MainViewController.toggleTrackCursor(_:)), keyEquivalent: "")
-        fullScreenMenu.addItem(.separator())
-        fullScreenMenu.addItem(withTitle: "Announce the Cursor",
-                               action: #selector(MainViewController.readCursorByAnnouncing(_:)), keyEquivalent: "")
-        fullScreenMenu.addItem(withTitle: "Let VoiceOver Read the Cursor",
-                               action: #selector(MainViewController.readCursorWithVoiceOver(_:)), keyEquivalent: "")
+        if Settings.voiceOverReadingAvailable {
+            fullScreenMenu.addItem(.separator())
+            fullScreenMenu.addItem(withTitle: "Announce the Cursor",
+                                   action: #selector(MainViewController.readCursorByAnnouncing(_:)), keyEquivalent: "")
+            fullScreenMenu.addItem(withTitle: "Let VoiceOver Read the Cursor",
+                                   action: #selector(MainViewController.readCursorWithVoiceOver(_:)), keyEquivalent: "")
+        }
         fullScreenMenu.addItem(.separator())
         fullScreenMenu.addItem(withTitle: "Speak All Symbols When Announcing",
                                action: #selector(MainViewController.toggleSpeakSymbols(_:)), keyEquivalent: "")

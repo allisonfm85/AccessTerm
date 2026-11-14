@@ -233,6 +233,11 @@ final class MainViewController: NSViewController,
     /// the shell is holding -- otherwise completion would complete nothing and history would
     /// throw the typing away.
     func inputLine(_ view: InputLineView, didSendToShell bytes: [UInt8], pending text: String) {
+        // A word motion in a full-screen program: the narrator reads a one-column move it
+        // causes as the word, not the character (w from "." onto "app").
+        if screenLines != nil {
+            narrator.wordMotion = bytes.count == 1 && Array("wbeWBE".utf8).contains(bytes[0])
+        }
         if !text.isEmpty {
             lastCommandOffset = transcript.length
             session.send(bytes: Array(text.utf8))
@@ -849,11 +854,11 @@ final class MainViewController: NSViewController,
                     if isKeyTerminalWindow { inputLine.postCursorMoved() }
                 }
                 // Put the review caret where the program's cursor is, so leaving the input
-                // line to read starts there. Quiet: the narrator is the voice.
-                var offset = 0
-                for row in 0..<min(frame.cursorRow, screen.count) { offset += screen[row].count + 1 }
-                let column = frame.cursorRow < screen.count ? screen[frame.cursorRow].count : 0
-                moveCaret(to: offset + min(frame.cursorCol, column))
+                // line to read starts there. Quiet: the narrator is the voice. The text view
+                // holds the same rows, one per line, so ScreenText's offset (in UTF-16 units,
+                // which an emoji counts as two) is the caret's.
+                moveCaret(to: ScreenText(rows: screen, cursorRow: frame.cursorRow,
+                                         cursorCol: frame.cursorCol).cursor)
             }
             return
         }

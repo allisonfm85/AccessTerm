@@ -24,10 +24,10 @@ struct ScreenText: Equatable {
         self.lineStarts = starts
         self.lineLengths = lengths
         if cursorRow >= 0, cursorRow < rows.count {
-            // The row is trimmed, so a cursor past its end is at its end.
-            let row = rows[cursorRow] as NSString
-            let column = max(0, min(cursorCol, row.length))
-            self.cursor = starts[cursorRow] + column
+            // cursorCol counts characters; accessibility counts UTF-16 units, and an emoji is
+            // two of those. The row is trimmed, so a cursor past its end is at its end.
+            let before = String(rows[cursorRow].prefix(max(0, cursorCol)))
+            self.cursor = starts[cursorRow] + (before as NSString).length
         } else {
             self.cursor = 0
         }

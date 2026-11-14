@@ -69,6 +69,10 @@ struct ScreenNarrator {
     var indentation: Indentation = .spoken
     /// A run of this many identical symbols, or more, is said as a count ("10 hash"). 0 is off.
     var repeatThreshold = 4
+    /// Set by the caller when the last key sent to the program was a word motion (w, b, e,
+    /// W, B, E). A one-column move is then still a word: `w` from the dot in "Xcode.app" lands
+    /// one column on, on "app", which `l` would have said as "a". Used up by the next move.
+    var wordMotion = false
     /// The indentation to sound a tone for after the last `narrate`, in columns, or nil.
     private(set) var lastTone: Int?
     /// The indentation of the last non-blank line read, to say when it changes.
@@ -118,6 +122,8 @@ struct ScreenNarrator {
         }
 
         let cursorMoved = before.cursorRow != frame.cursorRow || before.cursorCol != frame.cursorCol
+        let wordHint = wordMotion
+        if cursorMoved { wordMotion = false }
 
         // A shell in a multiplexer (tmux, screen) is a full-screen program to the terminal:
         // its commands scroll the screen. Rows that appeared above the cursor, with nothing
@@ -201,9 +207,9 @@ struct ScreenNarrator {
 
         if sameLine {
             let delta = abs(now.offset - was.offset)
-            if delta == 1 {
+            if delta == 1, !wordHint {
                 spoken.append(Self.character(at: now.offset, in: newChars))
-            } else if delta > 1 {
+            } else if delta >= 1 {
                 spoken.append(phrase(Self.word(at: now.offset, in: newChars)))
             }
         } else if was.start == now.start {
@@ -260,6 +266,17 @@ struct ScreenNarrator {
             if matches > bestMatches { bestMatches = matches; bestShift = shift }
         }
         guard bestMatches > 0 else { return nil }
+        // A real scroll moves the old rows up intact: the rows that were above the old cursor
+        // and are still on screen must, nearly all, be where the shift puts them. A page jump
+        // in an editor (Control-F) can line up a few repeated rows ("}", "end") by chance,
+        // and must not be read out as ten lines of output.
+        let overlap = max(0, min(before.cursorRow - bestShift, frame.cursorRow, count - bestShift))
+        var expected = 0, lined = 0
+        for index in 0..<overlap where !blank(frame.rows[index]) || !blank(before.rows[index + bestShift]) {
+            expected += 1
+            if frame.rows[index] == before.rows[index + bestShift] { lined += 1 }
+        }
+        guard lined * 4 >= expected * 3 else { return nil }
 
         var rows: [String] = []
         for index in 0..<frame.cursorRow where !blank(frame.rows[index]) {
@@ -376,12 +393,15 @@ struct ScreenNarrator {
         while end + 1 < frame.rows.count - 1, frame.wrapped[end + 1] { end += 1 }
         let gutter = gutterWidth(in: frame)
         var text = ""
+        var offset = 0
         for row in start...end {
             let chars = Array(frame.rows[row])
+            // The cursor's offset counts the characters of the rows before its own, not their
+            // width in columns: a wide character (an emoji, CJK) fills two columns but is one
+            // character here, and cursorCol is in characters too (see TerminalSession).
+            if row == frame.cursorRow { offset = text.count + max(0, frame.cursorCol - gutter) }
             text += String(chars.dropFirst(min(gutter, chars.count)))
         }
-        let rowWidth = max(1, frame.cols - gutter)
-        let offset = max(0, (frame.cursorRow - start) * rowWidth + frame.cursorCol - gutter)
         // The row diff only trims the end, so a line is its text minus trailing blanks
         // unless the cursor is past them (insert mode at the end of a line).
         var trimmed = text

@@ -25,8 +25,17 @@ enum Settings {
         set { defaults.set(newValue, forKey: "trackCursor") }
     }
 
+    /// Whether "Let VoiceOver Read the Cursor" is offered. Hidden for now: in testing,
+    /// VoiceOver did not follow the cursor in that mode (cursor moves were silent, and VO-L
+    /// read the view's label rather than the line). Until it does, the menu leaves it out and
+    /// a choice of it remembered from an earlier build reads as announce.
+    static let voiceOverReadingAvailable = false
+
     static var fullScreenReading: FullScreenReading {
-        get { defaults.string(forKey: "fullScreenReading").flatMap(FullScreenReading.init) ?? .announce }
+        get {
+            guard voiceOverReadingAvailable else { return .announce }
+            return defaults.string(forKey: "fullScreenReading").flatMap(FullScreenReading.init) ?? .announce
+        }
         set { defaults.set(newValue.rawValue, forKey: "fullScreenReading") }
     }
 

@@ -539,7 +539,14 @@ final class InputLineView: NSView {
             // vim and nvim ask for bracketed paste; without the markers a paste into insert
             // mode is typed, and autoindent runs over it.
             if bracketedPaste() {
-                bytes = Array("\u{1b}[200~".utf8) + bytes + Array("\u{1b}[201~".utf8)
+                // Pasted text that holds the end marker itself would end the paste early, and
+                // vim would run the rest as typed commands. Terminals take the markers out of
+                // a paste for that reason; so does this.
+                let inner = normalized
+                    .replacingOccurrences(of: "\u{1b}[200~", with: "")
+                    .replacingOccurrences(of: "\u{1b}[201~", with: "")
+                    .replacingOccurrences(of: "\n", with: "\r")
+                bytes = Array("\u{1b}[200~".utf8) + Array(inner.utf8) + Array("\u{1b}[201~".utf8)
             }
             delegate?.inputLine(self, didSendToShell: bytes, pending: "")
             return

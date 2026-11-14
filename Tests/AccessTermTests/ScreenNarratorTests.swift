@@ -117,6 +117,35 @@ final class ScreenNarratorTests: XCTestCase {
         wide.cursorRow = 0
         XCTAssertEqual(n.narrate(wide) ?? [], ["abcdef ghi"])
     }
+
+    /// w that lands one column on is still a word: from the dot in "Xcode.app" onto "app".
+    func testWordMotionOfOneColumnReadsTheWord() {
+        let rows = ["open Xcode.app now"]
+        var n = ScreenNarrator()
+        _ = n.narrate(frame(rows, row: 0, col: 10))
+        n.wordMotion = true
+        XCTAssertEqual(n.narrate(frame(rows, row: 0, col: 11)) ?? [], ["app"])
+        // l is not a word motion, and the hint is used up by the move it came with.
+        XCTAssertEqual(n.narrate(frame(rows, row: 0, col: 12)) ?? [], ["p"])
+    }
+
+    /// cursorCol counts characters, so a wide character before the cursor (an emoji, which
+    /// fills two columns) does not move the reading off by one.
+    func testWideCharacterBeforeCursor() {
+        let rows = ["\u{1F600} alpha beta"]
+        let out = narrate(frame(rows, row: 0, col: 2), frame(rows, row: 0, col: 8))
+        XCTAssertEqual(out[1] ?? [], ["beta"])
+    }
+
+    /// A page jump at the bottom of an editor (Control-F) that happens to line up a repeated
+    /// row ("}") is not output: it is read as the new line, not as ten lines.
+    func testPageJumpIsNotReadAsOutput() {
+        let before = ["func a() {", "  one", "}", "func b() {", "  two", "}", "x = 1", ""]
+        let after = ["}", "let c = 3", "var d = 4", "print(c)", "while d > 0 {", "  d -= 1", "y = 2", ""]
+        var n = ScreenNarrator()
+        _ = n.narrate(ScreenFrame(rows: before, cursorRow: 6, cursorCol: 0, cols: 80))
+        XCTAssertEqual(n.narrate(ScreenFrame(rows: after, cursorRow: 6, cursorCol: 0, cols: 80)) ?? [], ["y equals 2"])
+    }
 }
 
 final class SymbolAndScreenTextTests: XCTestCase {
@@ -131,6 +160,13 @@ final class SymbolAndScreenTextTests: XCTestCase {
     func testCharacterSymbolsAreNamed() {
         XCTAssertEqual(ScreenNarrator.character(at: 0, in: Array(":12")), "colon")
         XCTAssertEqual(ScreenNarrator.character(at: 0, in: Array("?")), "question mark")
+    }
+
+    /// ScreenText counts UTF-16 units, as accessibility does: an emoji before the cursor is two.
+    func testScreenTextCursorAfterEmoji() {
+        let screen = ScreenText(rows: ["ab", "\u{1F600}cd"], cursorRow: 1, cursorCol: 2)
+        XCTAssertEqual(screen.cursor, 3 + 3)
+        XCTAssertEqual(screen.string(for: NSRange(location: screen.cursor, length: 1)), "d")
     }
 
     func testLineSymbolsAreSpoken() {

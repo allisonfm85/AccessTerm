@@ -489,16 +489,16 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
         return last.didRun && !last.isFinished
     }
 
-    /// Whether the running program has asked for application cursor keys (DECCKM). Arrows
-    /// sent to it must be encoded to match -- ESC O A when set, ESC [ A when not. vim sets
-    /// it, nano does not, and the mode can change at any write, so this is read at the
-    /// keystroke, never stored.
     /// Whether the program has the cursor shown (DECTCEM). Editors show it; htop hides it.
     private var cursorVisible = true
 
     /// Whether the program has asked for bracketed paste, so a paste can be marked as one.
     var bracketedPasteMode: Bool { terminal?.bracketedPasteMode ?? false }
 
+    /// Whether the running program has asked for application cursor keys (DECCKM). Arrows
+    /// sent to it must be encoded to match -- ESC O A when set, ESC [ A when not. vim sets
+    /// it, nano does not, and the mode can change at any write, so this is read at the
+    /// keystroke, never stored.
     var applicationCursorKeys: Bool { terminal?.applicationCursor ?? false }
 
     /// What a program that labels its own turns prints the question behind.
@@ -825,7 +825,8 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
                 return trimmed
             })
             update.alternateFrame = ScreenFrame(rows: screen, wrapped: wrapped,
-                                                cursorRow: buffer.y, cursorCol: buffer.x,
+                                                cursorRow: buffer.y,
+                                                cursorCol: cursorCharacterIndex(row: buffer.y, column: buffer.x),
                                                 cursorVisible: cursorVisible, cols: terminal.cols)
             delegate?.session(self, didUpdate: update)
             return
@@ -1026,6 +1027,24 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
             })
         // A literal tab would collapse to nothing in the row for the same reason.
         return text.replacingOccurrences(of: "\t", with: " ")
+    }
+
+    /// The cursor's position in its row's text, in characters. The row text drops the empty
+    /// cell after each wide character (an emoji, CJK), which fills two columns but is one
+    /// character, so a column past one is one more than the character index. Built with the
+    /// same call as the row text, so the two always agree.
+    private func cursorCharacterIndex(row: Int, column: Int) -> Int {
+        guard column > 0, let line = terminal.getLine(row: row) else { return max(0, column) }
+        let emulator = self.terminal!
+        let end = min(column, line.count)
+        let prefix = line.translateToString(
+            trimRight: false, endCol: end,
+            skipNullCellsFollowingWide: true,
+            characterProvider: { cell in
+                let character = emulator.getCharacter(for: cell)
+                return character == "\0" ? " " : character
+            })
+        return prefix.count + (column - end)
     }
 
     /// Text of one transcript row. Trailing spaces are kept when the next row is a wrapped

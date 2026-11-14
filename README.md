@@ -26,6 +26,7 @@ It needs macOS 13 (Ventura) or later.
 - [Known limitations](#known-limitations)
 - [Known issues](#known-issues)
 - [Milestones](#milestones)
+- [Credits](#credits)
 - [License](#license)
 
 ## Installing and running AccessTerm
@@ -419,19 +420,13 @@ launches:
 
 - **Track the Cursor** turns cursor speech off, which brings back row-by-row speech for every
   full-screen program.
-- **Announce the Cursor** (the default) has AccessTerm speak what the cursor lands on, as in
-  the table. **Let VoiceOver Read the Cursor** instead tells VoiceOver the cursor moved, so
-  VoiceOver reads the character, word or line itself, with your own punctuation level and
-  indentation tones; AccessTerm then only speaks mode changes and messages. If it ever
-  misbehaves, switch back to Announce.
 - **Speak All Symbols When Announcing** (on by default) says every symbol by name, so `:`,
   `.`, `?` and `(` are heard as "colon", "dot", "question mark" and "open paren". The leading
   indentation is not spoken.
 - **Indentation** chooses how a change of indentation is made known when a whole line is
   announced: **Spoken** (the default) says "indent 4" when a line's indent differs from the
   last line read, and "no indent" when it drops back; **Tones** plays a short tone before each
-  indented line, higher for deeper; **Not Announced** says nothing. In Let VoiceOver Read the
-  Cursor mode VoiceOver's own indentation setting applies instead.
+  indented line, higher for deeper; **Not Announced** says nothing.
 - **Count Repeated Symbols** says a long run of one symbol as a count: a line of 50 `#` is
   "50 hash". Choose the length a run must reach (3, 4 by default, 5, 6, 8, 10, 16) or turn it
   off. Letters, digits and blanks are never counted, and one character read on its own is
@@ -444,13 +439,13 @@ reads the line the cursor is on, **Control-Command-W** the word, **Control-Comma
 character, and **Control-Command-R** repeats the last thing AccessTerm said. They are in the
 Terminal menu, and they never reach the program. Command-Shift-L reads the cursor line too.
 
-In either mode, VoiceOver's own read-line, read-word and read-character commands (VO+L, VO+W,
-VO+C) read the line, word and character at the program's cursor. Pasting into a program that
-asked for bracketed paste (vim and nvim do) is sent as a paste, so autoindent does not run over
-it.
+Pasting into a program that asked for bracketed paste (vim and nvim do) is sent as a paste, so
+autoindent does not run over it.
 
-Not done yet: reading a visual selection, and `showmode` has to be on (it is by default) for
-mode changes to be announced.
+Not done yet: reading a visual selection; having VoiceOver itself follow the program's cursor,
+so that VO-L, VO-W and VO-C read at the cursor (a mode for this exists but is hidden, because
+VoiceOver did not follow the cursor in testing); and `showmode` has to be on (it is by default)
+for mode changes to be announced.
 
 ## Settings applied automatically
 
@@ -585,6 +580,12 @@ the attributes the view reports.
    blocks, jumping between commands, copying output on its own. Custom VoiceOver rotors for
    commands, errors and Claude turns are not in yet.
 3. **Planned** — better support for full-screen programs, and a direct-input mode.
+
+## Credits
+
+- Cursor-aware speech for vim, nvim and other full-screen programs, the Full-Screen Programs
+  settings, the re-read commands, bracketed paste and the tmux support were contributed by
+  [saxomagic](https://github.com/saxomagic) in pull request #16.
 
 ## License
 
