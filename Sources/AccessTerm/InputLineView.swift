@@ -65,6 +65,15 @@ final class InputLineView: NSView {
 
     /// vi-style editing of the line, when Terminal > Vi-Style Command Line Editing is on.
     private var vi = ViLineEditor()
+    /// Whether a command is running (Claude Code, a REPL, a script asking a question).
+    /// vi-style editing is for the shell's own prompt only: while a command runs, the line
+    /// is that program's input, and keys -- Escape above all, which interrupts Claude Code --
+    /// go to it as they always have. Supplied by the controller; never cached here.
+    var programRunning: () -> Bool = { false }
+
+    /// Whether vi-style editing applies to the next key: the setting is on and the shell,
+    /// not a running command, is waiting for this line.
+    private var viActive: Bool { Settings.viCommandLine && !programRunning() }
 
     /// What has been typed and not yet sent.
     private(set) var text = "" { didSet { refresh(oldValue != text) } }
@@ -301,7 +310,7 @@ final class InputLineView: NSView {
             return
         }
 
-        if Settings.viCommandLine {
+        if viActive {
             if handleVi(event, flags: flags) { return }
         } else if vi.mode == .normal {
             vi.reset()
@@ -349,7 +358,7 @@ final class InputLineView: NSView {
     // MARK: - vi-style editing
 
     /// Whether the line is in vi normal mode, where the caret is on a character, not after it.
-    private var inViNormalMode: Bool { Settings.viCommandLine && vi.mode == .normal }
+    private var inViNormalMode: Bool { viActive && vi.mode == .normal }
 
     private func clampForNormalMode() {
         guard inViNormalMode else { return }
@@ -438,7 +447,7 @@ final class InputLineView: NSView {
     }
 
     private func noteViEdit() {
-        guard Settings.viCommandLine else { return }
+        guard viActive else { return }
         vi.noteInsertEdit(text: Array(text), caret: caret)
     }
 

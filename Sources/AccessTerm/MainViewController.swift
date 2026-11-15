@@ -124,6 +124,9 @@ final class MainViewController: NSViewController,
         inputLine.bracketedPaste = { [weak self] in
             self?.session.bracketedPasteMode ?? false
         }
+        inputLine.programRunning = { [weak self] in
+            self?.session.programIsRunning ?? false
+        }
         inputLine.applicationCursorKeys = { [weak self] in
             self?.session.applicationCursorKeys ?? false
         }

@@ -307,12 +307,16 @@ In normal mode, with an optional count in front (`3w`, `2x`):
 | `r` + a character, `~` | Replace a character; flip the case |
 | `p` `P` | Put what was last deleted or yanked, after or before the caret |
 | `u`, Control-R | Undo and redo. Typing in insert mode counts as one change |
-| `k` `j` | The shell's history, older and newer, like Up and Down |
+| `k` `j` | The shell's history, older and newer, like Up and Down (not working yet; see Known issues) |
 | Escape | Cancels a half-typed command |
+
+This applies only at the shell's own prompt. While a command is running (Claude Code, a REPL,
+a script asking a question), the line is that program's input and every key, Escape included,
+goes to it as usual, so Escape still interrupts Claude Code.
 
 Backspace is `h` and Forward Delete is `x` in normal mode, and the arrows, Home, End, Tab and
 Return keep their usual jobs. A key that means nothing here beeps. This is a single line, so
-there is no visual mode, no `.` repeat and no search; `j` and `k` are how you reach earlier
+there is no visual mode, no `.` repeat and no search; `j` and `k` are meant to reach earlier
 commands. Edits are spoken as one announcement, for example "hello deleted, Insert mode" after
 `cw`.
 
@@ -606,6 +610,13 @@ there is something to announce, and the view reports nothing readable until the 
 goes out, so the announcement is the only voice. Unlike the focus read, this path does consult
 the attributes the view reports.
 
+**Recalling an earlier command does not work.** Pressing Up or Down at the prompt, or `k` or
+`j` in vi-style normal mode, does not bring back an earlier command. Up and Down send the key
+to the shell, which recalls the command into its own line rather than into AccessTerm's
+command line, so the recalled command cannot be heard or edited there, and vi-style editing
+has nothing to work on. The likely fix is to bring a recalled command home to the command line
+the way Tab completion already does. Help is welcome.
+
 ## Milestones
 
 1. **Done** — PTY, headless VT engine, accessible transcript, command field, announcements.
@@ -617,8 +628,8 @@ the attributes the view reports.
 ## Credits
 
 - Cursor-aware speech for vim, nvim and other full-screen programs, the Full-Screen Programs
-  settings, the re-read commands, bracketed paste and the tmux support were contributed by
-  [saxomagic](https://github.com/saxomagic) in pull request #16.
+  settings, the re-read commands, bracketed paste, the tmux support and vi-style editing of the
+  command line were contributed by [saxomagic](https://github.com/saxomagic) in pull request #16.
 
 ## License
 
