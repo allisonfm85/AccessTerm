@@ -70,4 +70,34 @@ enum Settings {
         get { bool("viCommandLine", default: false) }
         set { defaults.set(newValue, forKey: "viCommandLine") }
     }
+
+    static let defaultFontSize = 13.0
+    static let fontSizeRange = 8.0...48.0
+    static let fontSizeChanged = Notification.Name("AccessTermFontSizeChanged")
+
+    /// Point size of the transcript, live line and command line (View > Make Text Bigger / Smaller).
+    static var fontSize: Double {
+        get {
+            let value = defaults.object(forKey: "fontSize") as? Double ?? defaultFontSize
+            return min(max(value, fontSizeRange.lowerBound), fontSizeRange.upperBound)
+        }
+        set {
+            defaults.set(min(max(newValue, fontSizeRange.lowerBound), fontSizeRange.upperBound), forKey: "fontSize")
+            NotificationCenter.default.post(name: fontSizeChanged, object: nil)
+        }
+    }
+
+    /// A short tone before an upper-case letter spoken on its own (moving the cursor onto it),
+    /// since VoiceOver announcements cannot carry a pitch. The raw value is the tone's pitch.
+    enum CapitalCue: Double {
+        case off = 0, low = 660, medium = 990, high = 1480
+    }
+
+    static var capitalCue: CapitalCue {
+        get {
+            guard let raw = defaults.object(forKey: "capitalCue") as? Double else { return .medium }
+            return CapitalCue(rawValue: raw) ?? .medium
+        }
+        set { defaults.set(newValue.rawValue, forKey: "capitalCue") }
+    }
 }

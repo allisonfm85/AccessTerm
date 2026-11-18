@@ -23,7 +23,7 @@ final class MainViewController: NSViewController,
     private let liveLabel = NSTextField(wrappingLabelWithString: "")
     private let inputLine = InputLineView()
 
-    private let monoFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    private var monoFont = NSFont.monospacedSystemFont(ofSize: CGFloat(Settings.fontSize), weight: .regular)
 
     /// The lines themselves live in the session, which builds them; the text view mirrors it.
     private var transcript: Transcript { session.transcript }
@@ -158,6 +158,8 @@ final class MainViewController: NSViewController,
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        NotificationCenter.default.addObserver(self, selector: #selector(fontSizeDidChange),
+                                               name: Settings.fontSizeChanged, object: nil)
         session.delegate = self
         appendExternal(["AccessTerm ready. Shell: /bin/zsh. Command-1 transcript, Command-2 command line."])
         session.start()
@@ -825,6 +827,9 @@ final class MainViewController: NSViewController,
                     if !voiceOverReads, Settings.indentation == .tones, let tone = narrator.lastTone {
                         ToneSpeaker.play(indent: tone)
                     }
+                    if !voiceOverReads, narrator.lastCapital, Settings.capitalCue != .off {
+                        ToneSpeaker.playCapital(hertz: Settings.capitalCue.rawValue)
+                    }
                 }
                 if narration != nil, voiceOverReads, let frame = update.alternateFrame,
                    let before = inputLine.screen {
@@ -1022,7 +1027,11 @@ final class MainViewController: NSViewController,
                 said = reading.line
                 if let tone = reading.tone, Settings.indentation == .tones { ToneSpeaker.play(indent: tone) }
             case .word: said = reading.word
-            case .character: said = reading.character
+            case .character:
+                said = reading.character
+                if said.count == 1, said.first!.isLetter, said.first!.isUppercase, Settings.capitalCue != .off {
+                    ToneSpeaker.playCapital(hertz: Settings.capitalCue.rawValue)
+                }
             }
         } else {
             let chars = Array(inputLine.text)
@@ -1068,6 +1077,18 @@ final class MainViewController: NSViewController,
         announcer.announceNow(["Indentation off", "Indentation tones", "Indentation spoken"][sender.tag])
     }
 
+    @objc func setCapitalCue(_ sender: NSMenuItem) {
+        let choices: [Settings.CapitalCue] = [.off, .low, .medium, .high]
+        guard sender.tag >= 0, sender.tag < choices.count else { return }
+        Settings.capitalCue = choices[sender.tag]
+        if choices[sender.tag] == .off {
+            announcer.announceNow("Capital letter cue off")
+        } else {
+            ToneSpeaker.playCapital(hertz: choices[sender.tag].rawValue)
+            announcer.announceNow("Capital letter cue \(["off", "low", "medium", "high"][sender.tag])")
+        }
+    }
+
     @objc func setRepeatThreshold(_ sender: NSMenuItem) {
         Settings.repeatThreshold = sender.tag
         announcer.announceNow(sender.tag == 0 ? "Repeated symbols not counted"
@@ -1110,6 +1131,41 @@ final class MainViewController: NSViewController,
         announcer.announceNow(announce)
     }
 
+    // MARK: - Font size
+
+    @objc func increaseFontSize(_ sender: Any?) { changeFontSize(to: Settings.fontSize + 1) }
+    @objc func decreaseFontSize(_ sender: Any?) { changeFontSize(to: Settings.fontSize - 1) }
+    @objc func resetFontSize(_ sender: Any?) { changeFontSize(to: Settings.defaultFontSize) }
+
+    private func changeFontSize(to size: Double) {
+        let old = Settings.fontSize
+        Settings.fontSize = size.rounded()
+        let now = Settings.fontSize
+        if now == old && size.rounded() != now {
+            announcer.announceNow(now == Settings.fontSizeRange.upperBound ? "Largest size" : "Smallest size")
+        } else {
+            announcer.announceNow("Font size \(Int(now))")
+        }
+    }
+
+    @objc private func fontSizeDidChange() {
+        let size = CGFloat(Settings.fontSize)
+        monoFont = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        textView.font = monoFont
+        liveLabel.font = monoFont
+        inputLine.font = monoFont
+        if let storage = textView.textStorage, storage.length > 0 {
+            textView.withoutSelfVoicing {
+                storage.beginEditing()
+                storage.enumerateAttribute(.font, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                    let font = (value as? NSFont) ?? self.monoFont
+                    storage.addAttribute(.font, value: NSFontManager.shared.convert(font, toSize: size), range: range)
+                }
+                storage.endEditing()
+            }
+        }
+    }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleSpeakOutput(_:)) {
             menuItem.state = announcer.enabled ? .on : .off
@@ -1123,6 +1179,9 @@ final class MainViewController: NSViewController,
         case #selector(toggleSpeakSymbols(_:)): menuItem.state = Settings.speakSymbols ? .on : .off
         case #selector(setIndentation(_:)):
             let current: Int = [ScreenNarrator.Indentation.off: 0, .tones: 1, .spoken: 2][Settings.indentation] ?? 2
+            menuItem.state = menuItem.tag == current ? .on : .off
+        case #selector(setCapitalCue(_:)):
+            let current = [Settings.CapitalCue.off: 0, .low: 1, .medium: 2, .high: 3][Settings.capitalCue] ?? 2
             menuItem.state = menuItem.tag == current ? .on : .off
         case #selector(setRepeatThreshold(_:)):
             menuItem.state = menuItem.tag == Settings.repeatThreshold ? .on : .off

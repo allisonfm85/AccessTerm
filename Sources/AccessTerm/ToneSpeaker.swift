@@ -15,9 +15,12 @@ enum ToneSpeaker {
 
     /// 16-bit mono PCM in a WAV container, with a short fade at each end so it does not click.
     static func wav(forIndent indent: Int) -> Data {
+        wav(hertz: frequency(forIndent: indent))
+    }
+
+    static func wav(hertz: Double) -> Data {
         let frames = Int(Double(sampleRate) * duration)
         let fade = max(1, sampleRate / 200)
-        let hertz = frequency(forIndent: indent)
         var samples = [Int16]()
         samples.reserveCapacity(frames)
         for n in 0..<frames {
@@ -41,10 +44,23 @@ enum ToneSpeaker {
     private static var cache: [Int: Data] = [:]
     private static var playing: [NSSound] = []
 
+    private static var capitalCache: [Double: Data] = [:]
+
+    /// The cue for an upper-case letter: a blip at `hertz`, higher than any indentation tone.
+    static func playCapital(hertz: Double) {
+        let data = capitalCache[hertz] ?? wav(hertz: hertz)
+        capitalCache[hertz] = data
+        play(data)
+    }
+
     static func play(indent: Int) {
         let key = max(0, min(indent, 32))
         let data = cache[key] ?? wav(forIndent: key)
         cache[key] = data
+        play(data)
+    }
+
+    private static func play(_ data: Data) {
         guard let sound = NSSound(data: data) else { return }
         playing.removeAll { !$0.isPlaying }
         playing.append(sound)

@@ -75,6 +75,8 @@ struct ScreenNarrator {
     var wordMotion = false
     /// The indentation to sound a tone for after the last `narrate`, in columns, or nil.
     private(set) var lastTone: Int?
+    /// True when the last narration was a single upper-case letter (see Settings.capitalCue).
+    private(set) var lastCapital = false
     /// The indentation of the last non-blank line read, to say when it changes.
     private var lastIndent = 0
     /// The command line being edited: what kind, its text and the cursor in it.
@@ -94,6 +96,7 @@ struct ScreenNarrator {
 
     mutating func narrate(_ frame: ScreenFrame) -> [String]? {
         lastTone = nil
+        lastCapital = false
         guard let last = frame.rows.indices.last,
               frame.cursorRow >= 0, frame.cursorRow < frame.rows.count else { return nil }
 
@@ -209,6 +212,7 @@ struct ScreenNarrator {
             let delta = abs(now.offset - was.offset)
             if delta == 1, !wordHint {
                 spoken.append(Self.character(at: now.offset, in: newChars))
+                lastCapital = Self.isCapital(at: now.offset, in: newChars)
             } else if delta >= 1 {
                 spoken.append(phrase(Self.word(at: now.offset, in: newChars)))
             }
@@ -220,7 +224,9 @@ struct ScreenNarrator {
                 // Key echo's to say.
             } else if Self.editedAtCursor(from: oldChars, to: newChars, at: now.offset),
                       !before.rows.contains(frame.rows[frame.cursorRow]) {
-                spoken.append(abs(oldChars.count - newChars.count) == 1 || oldChars.count == newChars.count
+                let single = abs(oldChars.count - newChars.count) == 1 || oldChars.count == newChars.count
+                lastCapital = single && Self.isCapital(at: now.offset, in: newChars)
+                spoken.append(single
                               ? Self.character(at: now.offset, in: newChars)
                               : phrase(Self.word(at: now.offset, in: newChars)))
             } else {
@@ -504,6 +510,10 @@ struct ScreenNarrator {
 
     static func line(_ text: String) -> String {
         text.trimmingCharacters(in: .whitespaces).isEmpty ? "blank" : text
+    }
+
+    static func isCapital(at offset: Int, in chars: [Character]) -> Bool {
+        offset < chars.count && chars[offset].isLetter && chars[offset].isUppercase
     }
 
     static func character(at offset: Int, in chars: [Character]) -> String {

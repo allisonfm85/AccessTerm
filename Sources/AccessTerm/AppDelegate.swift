@@ -307,6 +307,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.tag = tag
         }
         indentItem.submenu = indentMenu
+        let capitalItem = fullScreenMenu.addItem(withTitle: "Upper-Case Letter Cue", action: nil, keyEquivalent: "")
+        let capitalMenu = NSMenu(title: "Upper-Case Letter Cue")
+        for (tag, title) in ["Off", "Low Tone", "Medium Tone", "High Tone"].enumerated() {
+            let item = capitalMenu.addItem(withTitle: title,
+                                           action: #selector(MainViewController.setCapitalCue(_:)), keyEquivalent: "")
+            item.tag = tag
+        }
+        capitalItem.submenu = capitalMenu
         let repeatItem = fullScreenMenu.addItem(withTitle: "Count Repeated Symbols", action: nil, keyEquivalent: "")
         let repeatMenu = NSMenu(title: "Count Repeated Symbols")
         for threshold in [0, 3, 4, 5, 6, 8, 10, 16] {
@@ -339,6 +347,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                          action: #selector(MainViewController.sendShiftTab(_:)),
                          keyEquivalent: "")
         termItem.submenu = termMenu
+
+        // View menu: font size, as in Terminal (Cmd-+, Cmd--, Cmd-0).
+        let viewItem = NSMenuItem()
+        mainMenu.addItem(viewItem)
+        let viewMenu = NSMenu(title: "View")
+        viewMenu.addItem(withTitle: "Make Text Bigger",
+                         action: #selector(MainViewController.increaseFontSize(_:)),
+                         keyEquivalent: "=")
+        // Cmd-Shift-= (Cmd-+) as an alternate, so both chords work as in Terminal.
+        let bigger = viewMenu.addItem(withTitle: "Make Text Bigger",
+                                      action: #selector(MainViewController.increaseFontSize(_:)),
+                                      keyEquivalent: "=")
+        bigger.keyEquivalentModifierMask = [.command, .shift]
+        bigger.isAlternate = true
+        viewMenu.addItem(withTitle: "Make Text Smaller",
+                         action: #selector(MainViewController.decreaseFontSize(_:)),
+                         keyEquivalent: "-")
+        viewMenu.addItem(withTitle: "Default Text Size",
+                         action: #selector(MainViewController.resetFontSize(_:)),
+                         keyEquivalent: "0")
+        viewItem.submenu = viewMenu
 
         // Window menu. macOS adds its own tab commands (Show Next Tab, Move Tab to New
         // Window, Merge All Windows) here once tabbed windows exist, and lists the open
