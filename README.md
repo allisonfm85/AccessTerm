@@ -255,9 +255,17 @@ work from anywhere in the window.
   treats anything over about sixty bytes as a paste -- which used to mean a long line's Return
   was read as pasted text rather than "send this", and nothing happened. When the program has
   asked for bracketed paste, the text is wrapped in the paste markers too.
-- **Up/Down**: the shell's own history. Anything typed and not yet sent goes to the shell
-  first, so that its line and this one do not disagree; from then on you are editing the line
-  the shell holds, which the Current line shows.
+- **Up/Down**: the shell's own history, recalled into this command line. Anything typed and
+  not yet sent goes to the shell first, so Down past the newest command brings it back. The
+  whole recalled command is spoken, and "No older command" or "End of history" says when
+  there is nowhere to go. zsh keeps the history, so `HISTFILE`, `HISTSIZE` and your dedupe
+  options apply. Inside a full-screen program or a running command, Up and Down are that
+  program's keys, as before.
+- **Control-R**: reverse search through the shell's history (the newest 3000 commands). Type
+  to search; each change speaks the match, or "No match". Control-R again finds an older
+  match, Control-S a newer one, Delete shortens the search. Return runs the match; Tab, the
+  arrows, Home, End and Control-A/E put it on the line to edit; Escape or Control-G cancels
+  and leaves what you had typed. In vi normal mode Control-R is redo, as it is in vi.
 - **Tab**: shell completion, the same way -- what you have typed goes first, so there is
   something to complete.
 - **Left/Right**: move the caret one character, and the character you moved over is read out.
@@ -307,7 +315,7 @@ In normal mode, with an optional count in front (`3w`, `2x`):
 | `r` + a character, `~` | Replace a character; flip the case |
 | `p` `P` | Put what was last deleted or yanked, after or before the caret |
 | `u`, Control-R | Undo and redo. Typing in insert mode counts as one change |
-| `k` `j` | The shell's history, older and newer, like Up and Down (not working yet; see Known issues) |
+| `k` `j` | The shell's history, older and newer, like Up and Down |
 | Escape | Cancels a half-typed command |
 
 This applies only at the shell's own prompt. While a command is running (Claude Code, a REPL,
@@ -609,13 +617,6 @@ heard a syllable of the line and then the command. The notification is no longer
 there is something to announce, and the view reports nothing readable until the announcement
 goes out, so the announcement is the only voice. Unlike the focus read, this path does consult
 the attributes the view reports.
-
-**Recalling an earlier command does not work.** Pressing Up or Down at the prompt, or `k` or
-`j` in vi-style normal mode, does not bring back an earlier command. Up and Down send the key
-to the shell, which recalls the command into its own line rather than into AccessTerm's
-command line, so the recalled command cannot be heard or edited there, and vi-style editing
-has nothing to work on. The likely fix is to bring a recalled command home to the command line
-the way Tab completion already does. Help is welcome.
 
 ## Milestones
 

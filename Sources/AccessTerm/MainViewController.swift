@@ -52,6 +52,11 @@ final class MainViewController: NSViewController,
     /// completion beeps, and the report that follows explains, so "Attention" is not spoken.
     private var completionInFlight: String?
     private var completionTimeout: DispatchWorkItem?
+    /// An Up or Down sent to the shell and not yet answered: its direction, and the line that
+    /// was flushed ahead of it, to tell a recall that found nothing from one that did.
+    private var historyInFlight: (older: Bool, sent: String)?
+    /// A Control-R sent to the shell, waiting for its history.
+    private var historyListRequested = false
     /// Diagnostic only: ACCESSTERM_ECHO_DEBUG puts one line on stderr per committed line,
     /// saying how it was classified and whether it was announced. See logEchoDecisions.
     private let echoDebug = ProcessInfo.processInfo.environment["ACCESSTERM_ECHO_DEBUG"] != nil
@@ -253,13 +258,44 @@ final class MainViewController: NSViewController,
         // changed nothing from one that produced text. A Tab while a program runs is that
         // program's business -- no report is coming -- and the timeout covers a shell that
         // never answers, so a stale flag cannot swallow a later bell.
-        if bytes == [0x09], !session.programIsRunning {
-            completionInFlight = text
-            completionTimeout?.cancel()
-            let timeout = DispatchWorkItem { [weak self] in self?.completionInFlight = nil }
-            completionTimeout = timeout
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: timeout)
+        // Up and Down at the prompt are history recall, answered the same way (a full-screen
+        // program or a running command gets the keys as its own and no report comes back).
+        let recall = (bytes == [0x1b, 0x5b, 0x41] || bytes == [0x1b, 0x5b, 0x42])
+            && screenLines == nil && !session.programIsRunning
+        if (bytes == [0x09] && !session.programIsRunning) || recall {
+            if recall {
+                historyInFlight = (older: bytes[2] == 0x41, sent: text)
+            } else {
+                completionInFlight = text
+            }
+            armInFlightTimeout()
         }
+    }
+
+    /// The shell has two seconds to answer a completion, a recall or a history request; after
+    /// that the flags are dropped, so a stale one cannot swallow a later bell.
+    private func armInFlightTimeout() {
+        completionTimeout?.cancel()
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if self.historyListRequested {
+                self.announcer.announceNow("History unavailable.", priority: .high)
+            }
+            self.completionInFlight = nil
+            self.historyInFlight = nil
+            self.historyListRequested = false
+        }
+        completionTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: timeout)
+    }
+
+    /// Control-R at the prompt: ask the shell for its history, and open the search when it
+    /// arrives. Nothing is flushed first -- what is typed stays here and comes back if the
+    /// search is cancelled.
+    func inputLineDidRequestHistorySearch(_ view: InputLineView) {
+        historyListRequested = true
+        session.send(bytes: [0x12])
+        armInFlightTimeout()
     }
 
     /// Names the saved-paste scripts in order within this app run. Static so that two
@@ -916,6 +952,31 @@ final class MainViewController: NSViewController,
         }
     }
 
+    /// The shell recalled a line (Up or Down) and handed it back. The whole line is spoken,
+    /// as it would be if it had been typed; a recall that went nowhere says so.
+    func session(_ session: TerminalSession, didRecallLine buffer: String, cursor: Int) {
+        let pending = historyInFlight
+        historyInFlight = nil
+        completionTimeout?.cancel()
+        inputLine.adopt(buffer, caret: cursor)
+        if let pending, buffer == pending.sent {
+            announcer.announceNow(pending.older ? "No older command." : "End of history.",
+                                  priority: .high)
+        } else if buffer.isEmpty {
+            announcer.announceNow("Empty line.", priority: .high)
+        } else {
+            announcer.announceNow(buffer, priority: .high)
+        }
+    }
+
+    /// The shell's history, for the Control-R that asked for it.
+    func session(_ session: TerminalSession, didListHistory entries: [String]) {
+        guard historyListRequested else { return }
+        historyListRequested = false
+        completionTimeout?.cancel()
+        inputLine.beginSearch(entries: entries)
+    }
+
     /// The token the caret sits at the end of -- the word a completion just produced. The
     /// space a finished completion appends is stepped over first, so "git checkout " says
     /// "checkout" rather than nothing.
@@ -930,7 +991,7 @@ final class MainViewController: NSViewController,
 
     func sessionDidRingBell(_ session: TerminalSession) {
         NSSound.beep()
-        if completionInFlight != nil {
+        if completionInFlight != nil || historyInFlight != nil {
             // A completion that found nothing beeps, and the report that follows says so in
             // words; "Attention" on top of that would be noise. The beep still sounds.
             return

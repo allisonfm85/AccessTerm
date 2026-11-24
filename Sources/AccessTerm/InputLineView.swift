@@ -14,6 +14,9 @@ protocol InputLineViewDelegate: AnyObject {
     /// Something for the screen reader to say: the character the caret crossed, the word it
     /// crossed, what a deletion removed. Typing itself says nothing.
     func inputLine(_ view: InputLineView, announce text: String)
+    /// Control-R at the prompt: the delegate fetches the shell's history and answers with
+    /// beginSearch(entries:).
+    func inputLineDidRequestHistorySearch(_ view: InputLineView)
 }
 
 /// The command line: a view that is drawn and read, and never edited by the system.
@@ -51,6 +54,7 @@ final class InputLineView: NSView {
         didSet {
             guard passthrough != oldValue else { return }
             vi.reset()
+            search = nil
             setAccessibilityLabel(passthrough ? "Program input" : "Command line")
             needsDisplay = true
         }
@@ -74,6 +78,10 @@ final class InputLineView: NSView {
     /// Whether vi-style editing applies to the next key: the setting is on and the shell,
     /// not a running command, is waiting for this line.
     private var viActive: Bool { Settings.viCommandLine && !programRunning() }
+
+    /// Reverse history search (Control-R), while one is open. The line's own text is left
+    /// untouched underneath it, so cancelling brings back exactly what was typed.
+    private var search: HistorySearch? { didSet { needsDisplay = true } }
 
     /// What has been typed and not yet sent.
     private(set) var text = "" { didSet { refresh(oldValue != text) } }
@@ -137,7 +145,7 @@ final class InputLineView: NSView {
     /// is stored state, and stored state is one more place a stale line can survive. A
     /// getter can only ever answer with the current text. Same pattern as the transcript
     /// view's quiet window.
-    override func accessibilityValue() -> Any? { screen?.text ?? text }
+    override func accessibilityValue() -> Any? { screen?.text ?? search?.prompt ?? text }
 
     // MARK: - The program's screen, for VoiceOver to read
 
@@ -227,14 +235,15 @@ final class InputLineView: NSView {
         NSColor.separatorColor.setStroke()
         frame.stroke()
 
-        let showing = text.isEmpty ? placeholder : text
-        let colour = text.isEmpty ? NSColor.placeholderTextColor : NSColor.textColor
+        let searching = search?.prompt
+        let showing = searching ?? (text.isEmpty ? placeholder : text)
+        let colour = text.isEmpty && searching == nil ? NSColor.placeholderTextColor : NSColor.textColor
         let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: colour]
         let origin = NSPoint(x: padding.width, y: padding.height)
         (showing as NSString).draw(at: origin, withAttributes: attributes)
 
         guard window?.firstResponder === self else { return }
-        let before = String(text[text.startIndex..<index(caret)])
+        let before = searching ?? String(text[text.startIndex..<index(caret)])
         let width = before.isEmpty ? 0 : (before as NSString).size(withAttributes: attributes).width
         let height = ceil(font.ascender - font.descender)
         if inViNormalMode {
@@ -303,6 +312,11 @@ final class InputLineView: NSView {
             return
         }
 
+        if search != nil {
+            handleSearchKey(event, flags: flags)
+            return
+        }
+
         if flags == [.control],
            let character = event.charactersIgnoringModifiers?.lowercased().first,
            character.isLetter, let ascii = character.asciiValue, "cdzl".contains(character) {
@@ -314,6 +328,18 @@ final class InputLineView: NSView {
             if handleVi(event, flags: flags) { return }
         } else if vi.mode == .normal {
             vi.reset()
+        }
+
+        // Control-R: reverse search at the shell's own prompt. While a command is running the
+        // key is that program's (a REPL's readline has its own). In vi normal mode it is redo,
+        // which handleVi has already taken by this point.
+        if flags == [.control], event.charactersIgnoringModifiers?.lowercased() == "r" {
+            if programRunning() {
+                sendToShell([0x12])
+            } else {
+                delegate?.inputLineDidRequestHistorySearch(self)
+            }
+            return
         }
 
         switch event.keyCode {
@@ -353,6 +379,79 @@ final class InputLineView: NSView {
             insert(event.characters ?? "")
         }
         clampForNormalMode()
+    }
+
+    // MARK: - Reverse history search
+
+    /// Opens the search on the shell's history, oldest first. Ignored if a full-screen program
+    /// has taken the screen or a search is already open while the answer was in flight.
+    func beginSearch(entries: [String]) {
+        guard !passthrough, search == nil, isEnabled else { return }
+        search = HistorySearch(entries: entries)
+        announce(entries.isEmpty ? "Reverse search. History is empty." : "Reverse search.")
+    }
+
+    /// Keys while a search is open: typing and Delete edit the query; Control-R and
+    /// Control-S step older and newer; Return runs the match; Tab, the arrows, Home, End and
+    /// Control-A/E take it onto the line to edit; Escape and Control-G cancel.
+    private func handleSearchKey(_ event: NSEvent, flags: NSEvent.ModifierFlags) {
+        guard var current = search else { return }
+        let letter = flags == [.control] ? event.charactersIgnoringModifiers?.lowercased() : nil
+
+        func say(_ search: HistorySearch) {
+            announce(search.match ?? (search.query.isEmpty ? "Empty query" : "No match"))
+        }
+        func accept(caretAtStart: Bool) {
+            let taken = current.match
+            search = nil
+            guard let taken else { announce("Search cancelled"); return }
+            text = taken
+            caret = caretAtStart ? 0 : taken.count
+            announce(taken)
+        }
+
+        switch (event.keyCode, letter) {
+        case (InputLineView.escape, _), (_, "g"?):
+            search = nil
+            announce("Search cancelled")
+        case (InputLineView.returnKey, _), (InputLineView.enterKey, _):
+            let taken = current.match
+            search = nil
+            if let taken {
+                vi.reset()
+                clear()
+                delegate?.inputLine(self, didSubmit: taken)
+            } else {
+                announce("Search cancelled")
+            }
+        case (_, "r"?):
+            if current.older() { say(current) } else { announce("No older match") }
+            search = current
+        case (_, "s"?):
+            if current.newer() { say(current) } else { announce("No newer match") }
+            search = current
+        case (InputLineView.deleteKey, _):
+            current.backspace()
+            search = current
+            say(current)
+        case (InputLineView.home, _), (_, "a"?), (InputLineView.left, _):
+            accept(caretAtStart: true)
+        case (InputLineView.tab, _), (InputLineView.right, _), (InputLineView.end, _),
+             (InputLineView.up, _), (InputLineView.down, _), (_, "e"?):
+            accept(caretAtStart: false)
+        default:
+            guard letter == nil, !flags.contains(.command), !flags.contains(.control) else { return }
+            let typed = (event.characters ?? "").filter { character in
+                character.unicodeScalars.allSatisfy { scalar in
+                    !CharacterSet.controlCharacters.contains(scalar)
+                        && !(0xF700...0xF8FF).contains(scalar.value)
+                }
+            }
+            guard !typed.isEmpty else { return }
+            current.type(typed)
+            search = current
+            say(current)
+        }
     }
 
     // MARK: - vi-style editing
