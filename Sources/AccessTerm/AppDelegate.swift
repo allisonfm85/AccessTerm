@@ -306,6 +306,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                           action: #selector(MainViewController.setIndentation(_:)), keyEquivalent: "")
             item.tag = tag
         }
+        indentMenu.addItem(.separator())
+        indentMenu.addItem(withTitle: "Only When Indentation Changes",
+                           action: #selector(MainViewController.toggleIndentChangesOnly(_:)), keyEquivalent: "")
         indentItem.submenu = indentMenu
         let capitalItem = fullScreenMenu.addItem(withTitle: "Upper-Case Letter Cue", action: nil, keyEquivalent: "")
         let capitalMenu = NSMenu(title: "Upper-Case Letter Cue")

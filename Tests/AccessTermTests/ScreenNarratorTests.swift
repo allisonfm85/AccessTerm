@@ -277,6 +277,45 @@ final class CommandLineIndentRepeatTests: XCTestCase {
         XCTAssertNil(tones.lastTone)
     }
 
+    private let alike = ["top", "    one", "    two", "        deep", "    three", "end", "~"]
+
+    private func startAlike() -> ScreenNarrator {
+        var n = ScreenNarrator()
+        _ = n.narrate(frame(last: "", row: 0, col: 0, rows: alike))
+        return n
+    }
+
+    func testSameIndentIsQuietWhenChangesOnly() {
+        var n = startAlike()
+        XCTAssertEqual(n.narrate(frame(last: "", row: 1, col: 4, rows: alike)) ?? [], ["indent 4, one"])
+        XCTAssertEqual(n.narrate(frame(last: "", row: 2, col: 4, rows: alike)) ?? [], ["two"])
+        XCTAssertEqual(n.narrate(frame(last: "", row: 3, col: 8, rows: alike)) ?? [], ["indent 8, deep"])
+        XCTAssertEqual(n.narrate(frame(last: "", row: 4, col: 4, rows: alike)) ?? [], ["indent 4, three"])
+    }
+
+    func testSameIndentIsAnnouncedEveryTimeWhenChangesOnlyIsOff() {
+        var n = startAlike()
+        n.indentChangesOnly = false
+        XCTAssertEqual(n.narrate(frame(last: "", row: 1, col: 4, rows: alike)) ?? [], ["indent 4, one"])
+        XCTAssertEqual(n.narrate(frame(last: "", row: 2, col: 4, rows: alike)) ?? [], ["indent 4, two"])
+        XCTAssertEqual(n.narrate(frame(last: "", row: 5, col: 0, rows: alike)) ?? [], ["no indent, end"])
+    }
+
+    func testTonesFollowTheSameRule() {
+        var n = startAlike()
+        n.indentation = .tones
+        _ = n.narrate(frame(last: "", row: 1, col: 4, rows: alike))
+        XCTAssertEqual(n.lastTone, 4)
+        _ = n.narrate(frame(last: "", row: 2, col: 4, rows: alike))
+        XCTAssertNil(n.lastTone)
+        _ = n.narrate(frame(last: "", row: 3, col: 8, rows: alike))
+        XCTAssertEqual(n.lastTone, 8)
+        n.indentChangesOnly = false
+        _ = n.narrate(frame(last: "", row: 3, col: 8, rows: alike))
+        _ = n.narrate(frame(last: "", row: 4, col: 4, rows: alike))
+        XCTAssertEqual(n.lastTone, 4)
+    }
+
     func testRepeatedSymbolsAreCounted() {
         let hashes = String(repeating: "#", count: 50)
         XCTAssertEqual(SymbolSpeller.spoken(hashes, names: true, repeatThreshold: 4), "50 hash")

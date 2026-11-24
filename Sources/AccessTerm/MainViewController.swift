@@ -857,6 +857,7 @@ final class MainViewController: NSViewController,
                     narrator.scope = voiceOverReads ? .modesAndMessages : .everything
                     narrator.speaksSymbols = Settings.speakSymbols
                     narrator.indentation = Settings.indentation
+                    narrator.indentChangesOnly = Settings.indentChangesOnly
                     narrator.repeatThreshold = Settings.repeatThreshold
                     narration = narrator.narrate(frame)
                     // The tone goes ahead of the words it belongs to.
@@ -1079,6 +1080,7 @@ final class MainViewController: NSViewController,
         var reader = narrator
         reader.speaksSymbols = Settings.speakSymbols
         reader.indentation = Settings.indentation
+        reader.indentChangesOnly = Settings.indentChangesOnly
         reader.repeatThreshold = Settings.repeatThreshold
         let said: String
         if let frame = lastFrame {
@@ -1136,6 +1138,12 @@ final class MainViewController: NSViewController,
         guard sender.tag >= 0, sender.tag < choices.count else { return }
         Settings.indentation = choices[sender.tag]
         announcer.announceNow(["Indentation off", "Indentation tones", "Indentation spoken"][sender.tag])
+    }
+
+    @objc func toggleIndentChangesOnly(_ sender: Any?) {
+        Settings.indentChangesOnly.toggle()
+        announcer.announceNow(Settings.indentChangesOnly ? "Indentation only when it changes"
+                                                         : "Indentation on every line")
     }
 
     @objc func setCapitalCue(_ sender: NSMenuItem) {
@@ -1241,6 +1249,7 @@ final class MainViewController: NSViewController,
         case #selector(setIndentation(_:)):
             let current: Int = [ScreenNarrator.Indentation.off: 0, .tones: 1, .spoken: 2][Settings.indentation] ?? 2
             menuItem.state = menuItem.tag == current ? .on : .off
+        case #selector(toggleIndentChangesOnly(_:)): menuItem.state = Settings.indentChangesOnly ? .on : .off
         case #selector(setCapitalCue(_:)):
             let current = [Settings.CapitalCue.off: 0, .low: 1, .medium: 2, .high: 3][Settings.capitalCue] ?? 2
             menuItem.state = menuItem.tag == current ? .on : .off

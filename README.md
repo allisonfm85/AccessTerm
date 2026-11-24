@@ -471,7 +471,11 @@ launches:
 - **Indentation** chooses how a change of indentation is made known when a whole line is
   announced: **Spoken** (the default) says "indent 4" when a line's indent differs from the
   last line read, and "no indent" when it drops back; **Tones** plays a short tone before each
-  indented line, higher for deeper; **Not Announced** says nothing.
+  indented line, higher for deeper; **Not Announced** says nothing. **Only When Indentation
+  Changes** (on by default) keeps both quiet while consecutive lines are indented alike -- a
+  line at the same indent as the last one announced gets no indent, tone or otherwise, and a
+  different indent is announced afresh. Turn it off to hear the indent on every indented line.
+  Read Cursor Line always says the indent.
 - **Count Repeated Symbols** says a long run of one symbol as a count: a line of 50 `#` is
   "50 hash". Choose the length a run must reach (3, 4 by default, 5, 6, 8, 10, 16) or turn it
   off. Letters, digits and blanks are never counted, and one character read on its own is

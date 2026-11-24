@@ -67,6 +67,11 @@ struct ScreenNarrator {
     /// How a change of indentation is made known when a whole line is read.
     enum Indentation: String { case off, tones, spoken }
     var indentation: Indentation = .spoken
+    /// Make indentation known only when it differs from the last indentation made known: a
+    /// run of lines indented alike is said (or toned) once, and a different indent says it
+    /// afresh. Off, every indented line carries its indent; a drop back to none is still
+    /// said only when it is a change.
+    var indentChangesOnly = true
     /// A run of this many identical symbols, or more, is said as a count ("10 hash"). 0 is off.
     var repeatThreshold = 4
     /// Set by the caller when the last key sent to the program was a word motion (w, b, e,
@@ -301,8 +306,9 @@ struct ScreenNarrator {
         SymbolSpeller.spoken(text, names: speaksSymbols, repeatThreshold: repeatThreshold)
     }
 
-    /// A whole line, with its indentation made known when it differs from the last line read:
-    /// "indent 4", or a tone chosen by `indentation`. A blank line says so and changes nothing.
+    /// A whole line, with its indentation made known when it differs from the last line read
+    /// (or on every indented line if `indentChangesOnly` is off): "indent 4", or a tone chosen
+    /// by `indentation`. A blank line says so and changes nothing.
     mutating func lineUtterance(_ text: String) -> String {
         guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return "blank" }
         let indent = text.prefix { $0 == " " }.count
@@ -310,8 +316,9 @@ struct ScreenNarrator {
         switch indentation {
         case .spoken:
             if indent != lastIndent { prefix = indent == 0 ? "no indent, " : "indent \(indent), " }
+            else if indent > 0, !indentChangesOnly { prefix = "indent \(indent), " }
         case .tones:
-            if indent > 0 { lastTone = indent }
+            if indent > 0, indent != lastIndent || !indentChangesOnly { lastTone = indent }
         case .off:
             break
         }

@@ -64,6 +64,13 @@ enum Settings {
         set { defaults.set(max(0, newValue), forKey: "repeatThreshold") }
     }
 
+    /// Say or tone an indentation only when it differs from the last one made known. Off, every
+    /// indented line is announced with its indentation.
+    static var indentChangesOnly: Bool {
+        get { bool("indentChangesOnly", default: true) }
+        set { defaults.set(newValue, forKey: "indentChangesOnly") }
+    }
+
     /// vi-style modal editing on the command line: Escape for normal mode, then motions and
     /// operators. Off, the line behaves exactly as it always has.
     static var viCommandLine: Bool {
