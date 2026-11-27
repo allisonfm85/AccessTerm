@@ -438,6 +438,20 @@ one thing for them to work on.
   cursor is, see [Editors: vim and nvim](#editors-vim-and-nvim); the rest speak the rows
   that changed.
 
+### Reviewing a screen that keeps redrawing
+
+A full-screen program's screen is shown in the transcript view, and a program that redraws all
+the time (tmux, codex, Claude Code) used to rewrite it under you. **Command-1** now pauses the
+screen: it lands on the program's cursor line, says "Screen paused", and the view, its caret
+and the speech hold still while you read with the arrow keys, however much the program draws.
+The program carries on underneath, and keys you type in the transcript view do not reach it.
+**Command-Shift-1** brings the paused screen up to date and keeps your place. **Command-2**
+returns to the program, resumes the live screen and puts the caret back on the program's
+cursor; nothing that changed meanwhile is read out as a burst. Moving focus to the transcript
+view any other way pauses it in the same way. If the program exits while you are paused, the
+transcript replaces the screen as usual. Even when not paused, only the rows that changed are
+touched, so an unchanged screen no longer disturbs VoiceOver.
+
 ## Editors: vim and nvim
 
 While a full-screen program owns the screen, keys go straight to it, so modal editing works

@@ -248,6 +248,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         termMenu.addItem(withTitle: "Focus Command Line",
                          action: #selector(MainViewController.focusCommandLine(_:)),
                          keyEquivalent: "2")
+        let refresh = termMenu.addItem(withTitle: "Refresh Paused Screen",
+                                       action: #selector(MainViewController.refreshScreenSnapshot(_:)),
+                                       keyEquivalent: "1")
+        refresh.keyEquivalentModifierMask = [.command, .shift]
         let toEnd = termMenu.addItem(withTitle: "Go to End of Transcript",
                                      action: #selector(MainViewController.goToEnd(_:)),
                                      keyEquivalent: "e")

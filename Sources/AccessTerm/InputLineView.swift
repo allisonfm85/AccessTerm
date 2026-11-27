@@ -262,7 +262,14 @@ final class InputLineView: NSView {
     // MARK: - Focus
 
     override var acceptsFirstResponder: Bool { isEnabled }
-    override func becomeFirstResponder() -> Bool { needsDisplay = true; return super.becomeFirstResponder() }
+    /// Called when the line takes focus, so the controller can end a screen review.
+    var onFocus: (() -> Void)?
+    override func becomeFirstResponder() -> Bool {
+        needsDisplay = true
+        let accepted = super.becomeFirstResponder()
+        if accepted { onFocus?() }
+        return accepted
+    }
     override func resignFirstResponder() -> Bool { needsDisplay = true; return super.resignFirstResponder() }
     override var focusRingMaskBounds: NSRect { bounds }
     override func drawFocusRingMask() { bounds.fill() }

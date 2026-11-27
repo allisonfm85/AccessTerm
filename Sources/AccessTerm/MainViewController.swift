@@ -33,6 +33,11 @@ final class MainViewController: NSViewController,
     private var narrator = ScreenNarrator()
     /// Set while a frame is being handled when VoiceOver is to be told the cursor moved.
     private var cursorMovedForVoiceOver = false
+    /// True while the user is reviewing a full-screen program's screen (Command-1, or moving
+    /// focus to the transcript view). The program keeps running and its state keeps being
+    /// tracked, but the text view, its caret, speech and tones hold still until the review
+    /// ends, so a screen that redraws continuously (tmux, codex) can be read at leisure.
+    private var screenFrozen = false
     /// The last screen the full-screen program drew, with its cursor, for the commands that
     /// read the line, word or character at the cursor again.
     private var lastFrame: ScreenFrame?
@@ -126,6 +131,7 @@ final class MainViewController: NSViewController,
         inputLine.font = monoFont
         inputLine.placeholder = "Type a command and press Return"
         inputLine.delegate = self
+        inputLine.onFocus = { [weak self] in self?.resumeLiveScreen() }
         inputLine.bracketedPaste = { [weak self] in
             self?.session.bracketedPasteMode ?? false
         }
@@ -399,6 +405,38 @@ final class MainViewController: NSViewController,
     /// output after the very first line.
     private var shouldFollowOutput: Bool {
         view.window?.firstResponder !== textView || isCaretAtEnd
+    }
+
+    /// Brings the text view to `text` by changing only what differs, leaving the selection and
+    /// whatever VoiceOver holds alone where nothing changed.
+    private func patchText(to text: String) {
+        guard let storage = textView.textStorage,
+              let edit = TextDiff.minimalEdit(from: storage.string, to: text) else { return }
+        textView.withoutSelfVoicing {
+            storage.replaceCharacters(in: edit.range,
+                                      with: NSAttributedString(string: edit.replacement, attributes: textAttributes))
+        }
+    }
+
+    private static func screenText(_ rows: [String]) -> String { rows.map { $0 + "\n" }.joined() }
+
+    /// The program's cursor as an offset into the screen text.
+    private func screenCursorOffset(of rows: [String], frame: ScreenFrame?) -> Int? {
+        guard let frame else { return nil }
+        return ScreenText(rows: rows, cursorRow: frame.cursorRow, cursorCol: frame.cursorCol).cursor
+    }
+
+    /// Ends a review: the view catches up with the screen as it now is, the caret goes back
+    /// to the program's cursor, and the narrator is brought up to date without saying
+    /// anything, so what changed while frozen is not read out as one big difference.
+    private func resumeLiveScreen() {
+        guard screenFrozen else { return }
+        screenFrozen = false
+        guard let rows = screenLines else { return }
+        patchText(to: MainViewController.screenText(rows))
+        if let cursor = screenCursorOffset(of: rows, frame: lastFrame) { moveCaret(to: cursor) }
+        if tracksCursor, let frame = lastFrame { _ = narrator.narrate(frame) }
+        cursorMovedForVoiceOver = false
     }
 
     private func moveCaret(to offset: Int) {
@@ -840,7 +878,26 @@ final class MainViewController: NSViewController,
         if let screen = update.alternateScreen {
             let previous = screenLines
             screenLines = screen
-            setText(screen.map { $0 + "\n" }.joined())
+            // Focus in the transcript view while a program runs is a review. It holds the
+            // screen still; the program's state stays current underneath.
+            if previous != nil, !screenFrozen, view.window?.firstResponder === textView {
+                screenFrozen = true
+            } else if screenFrozen, view.window?.firstResponder !== textView {
+                resumeLiveScreen()
+            }
+            if screenFrozen {
+                if let frame = update.alternateFrame {
+                    lastFrame = frame
+                    inputLine.showScreen(ScreenText(rows: screen, cursorRow: frame.cursorRow,
+                                                    cursorCol: frame.cursorCol))
+                }
+                return
+            }
+            if previous == nil {
+                setText(MainViewController.screenText(screen))
+            } else {
+                patchText(to: MainViewController.screenText(screen))
+            }
             if previous == nil {
                 inputLine.passthrough = true
                 inputLine.placeholder = "Keys go to the program"
@@ -910,6 +967,7 @@ final class MainViewController: NSViewController,
 
         if screenLines != nil {
             screenLines = nil
+            screenFrozen = false
             narrator.reset()
             lastFrame = nil
             inputLine.showScreen(nil)
@@ -1047,11 +1105,39 @@ final class MainViewController: NSViewController,
             land(on: block.turns.last ?? block)
             return
         }
+        if let rows = screenLines {
+            // A full-screen program: freeze the screen as it is now and land on the program's
+            // cursor line, so the view can be read while the program goes on redrawing.
+            screenFrozen = true
+            patchText(to: MainViewController.screenText(rows))
+            let offset = screenCursorOffset(of: rows, frame: lastFrame) ?? lastLineStart
+            var line = ""
+            if let frame = lastFrame, frame.cursorRow >= 0, frame.cursorRow < rows.count {
+                line = rows[frame.cursorRow].trimmingCharacters(in: .whitespaces)
+            }
+            landCaret(at: offset, announcing: line.isEmpty ? "Screen paused" : "Screen paused. " + line)
+            return
+        }
         landCaret(at: lastCommandOffset ?? lastLineStart)
     }
 
+    /// While a full-screen program's screen is frozen for review: bring it up to date without
+    /// leaving, keeping the reading position.
+    @objc func refreshScreenSnapshot(_ sender: Any?) {
+        guard screenFrozen, let rows = screenLines else {
+            announcer.announceNow("No paused screen")
+            return
+        }
+        let was = textView.selectedRange().location
+        patchText(to: MainViewController.screenText(rows))
+        moveCaret(to: was)
+        announcer.announceNow("Screen refreshed")
+    }
+
     @objc func focusCommandLine(_ sender: Any?) {
-        view.window?.makeFirstResponder(inputLine)
+        let wasPaused = screenFrozen
+        view.window?.makeFirstResponder(inputLine)    // focus resumes a paused screen
+        if wasPaused { announcer.announceNow("Live screen resumed") }
     }
 
     @objc func goToEnd(_ sender: Any?) {
