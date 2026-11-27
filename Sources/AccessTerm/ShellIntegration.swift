@@ -121,6 +121,43 @@ enum ShellIntegration {
         }
         zle -N __accessterm_complete
         bindkey '^I' __accessterm_complete
+
+        # Up and Down, the same way. zsh keeps the history and does the recall, so HISTFILE,
+        # HISTSIZE and the user's dedupe options all apply; the recalled line is reported
+        # (OSC 7770;history;cursor;line) and the buffer emptied, so it lands on the app's
+        # input line. The app sends whatever was typed first, so going Down past the newest
+        # entry brings that back, as in any shell.
+        __accessterm_history_widget() {
+            zle "$1"
+            local encoded="$(print -rn -- "$BUFFER" | base64)"
+            printf '\e]7770;history;%d;%s\a' "$CURSOR" "$encoded" > /dev/tty
+            BUFFER=""
+            CURSOR=0
+        }
+        __accessterm_history_up() { __accessterm_history_widget up-line-or-history }
+        __accessterm_history_down() { __accessterm_history_widget down-line-or-history }
+        zle -N __accessterm_history_up
+        zle -N __accessterm_history_down
+        bindkey '^[[A' __accessterm_history_up
+        bindkey '^[OA' __accessterm_history_up
+        bindkey '^[[B' __accessterm_history_down
+        bindkey '^[OB' __accessterm_history_down
+
+        # Control-R. zsh's own incremental search reads keys inside the editor and cannot
+        # report back, so the search runs in the app. This only hands over the history
+        # (OSC 7770;list;data): the newest 3000 entries, oldest first, separated by the
+        # unit separator because a command can span lines, base64ed like the rest.
+        __accessterm_history_list() {
+            local -a numbers entries
+            local number
+            numbers=(${(onk)history})
+            numbers=(${numbers[-3000,-1]})
+            for number in $numbers; do entries+=("$history[$number]"); done
+            local encoded="$(print -rn -- "${(pj:\x1f:)entries}" | base64)"
+            printf '\e]7770;list;%s\a' "$encoded" > /dev/tty
+        }
+        zle -N __accessterm_history_list
+        bindkey '^R' __accessterm_history_list
     fi
     """#
 }

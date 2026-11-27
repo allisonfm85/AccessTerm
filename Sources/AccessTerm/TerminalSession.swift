@@ -77,9 +77,18 @@ protocol TerminalSessionDelegate: AnyObject {
     /// The shell ran a Tab completion and handed the edited line back (see ShellIntegration's
     /// completion widget). `cursor` counts characters from the start of `buffer`.
     func session(_ session: TerminalSession, didCompleteLine buffer: String, cursor: Int)
+    /// The shell recalled a line from history (Up or Down) and handed it back.
+    func session(_ session: TerminalSession, didRecallLine buffer: String, cursor: Int)
+    /// The shell handed over its history for a reverse search, oldest first.
+    func session(_ session: TerminalSession, didListHistory entries: [String])
     func sessionDidRingBell(_ session: TerminalSession)
     func session(_ session: TerminalSession, didChangeTitle title: String)
     func session(_ session: TerminalSession, didTerminateWithExitCode code: Int32?)
+}
+
+extension TerminalSessionDelegate {
+    func session(_ session: TerminalSession, didRecallLine buffer: String, cursor: Int) {}
+    func session(_ session: TerminalSession, didListHistory entries: [String]) {}
 }
 
 /// Owns the pseudo-terminal, the shell process, and the VT parser.
@@ -619,14 +628,36 @@ final class TerminalSession: TerminalDelegate, LocalProcessDelegate {
     /// input view, so it goes straight to the delegate rather than becoming state here.
     private func handleCompletionReport(_ data: ArraySlice<UInt8>) {
         guard let payload = String(bytes: data, encoding: .utf8) else { return }
-        let fields = payload.split(separator: ";", omittingEmptySubsequences: false)
-        guard fields.count >= 2, let cursor = Int(fields[0]) else { return }
-        // base64 has no semicolons of its own, so anything after the first one is the
-        // encoding; whitespace is dropped in case an encoder wraps its output.
-        let encoded = fields[1...].joined(separator: ";").filter { !$0.isWhitespace }
-        guard let decoded = Data(base64Encoded: encoded),
-              let buffer = String(data: decoded, encoding: .utf8) else { return }
-        delegate?.session(self, didCompleteLine: buffer, cursor: cursor)
+        var fields = payload.split(separator: ";", omittingEmptySubsequences: false)
+        // Completion is "cursor;line"; history recall is "history;cursor;line"; the history
+        // list for a reverse search is "list;entries".
+        let kind = fields.first.map(String.init) ?? ""
+        if kind == "history" || kind == "list" { fields.removeFirst() }
+        guard let first = fields.first else { return }
+        if kind == "list" {
+            let entries = decodeBase64(fields).map { $0.split(separator: "\u{1f}", omittingEmptySubsequences: true).map(String.init) }
+            delegate?.session(self, didListHistory: entries ?? [])
+            return
+        }
+        guard fields.count >= 2, let cursor = Int(first),
+              let buffer = decodeBase64(fields[1...]) else { return }
+        if kind == "history" {
+            delegate?.session(self, didRecallLine: buffer, cursor: cursor)
+        } else {
+            delegate?.session(self, didCompleteLine: buffer, cursor: cursor)
+        }
+    }
+
+    /// base64 has no semicolons of its own, so anything after the first one is the encoding;
+    /// whitespace is dropped in case an encoder wraps its output.
+    private func decodeBase64(_ fields: ArraySlice<Substring>) -> String? {
+        let encoded = fields.joined(separator: ";").filter { !$0.isWhitespace }
+        guard let decoded = Data(base64Encoded: encoded) else { return nil }
+        return String(data: decoded, encoding: .utf8)
+    }
+
+    private func decodeBase64(_ fields: [Substring]) -> String? {
+        decodeBase64(fields[...])
     }
 
     /// OSC 133: A before the prompt, B where the command is typed, C when it starts running,

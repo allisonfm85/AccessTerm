@@ -17,7 +17,9 @@ let package = Package(
         .testTarget(
             name: "AccessTermTests",
             dependencies: ["AccessTerm"],
-            path: "Tests/AccessTermTests"
+            path: "Tests/AccessTermTests",
+            // Read straight from the source tree via #filePath, not bundled.
+            exclude: ["Fixtures"]
         )
     ]
 )

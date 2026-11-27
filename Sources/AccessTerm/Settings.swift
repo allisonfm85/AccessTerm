@@ -64,10 +64,47 @@ enum Settings {
         set { defaults.set(max(0, newValue), forKey: "repeatThreshold") }
     }
 
+    /// Say or tone an indentation only when it differs from the last one made known. Off, every
+    /// indented line is announced with its indentation.
+    static var indentChangesOnly: Bool {
+        get { bool("indentChangesOnly", default: true) }
+        set { defaults.set(newValue, forKey: "indentChangesOnly") }
+    }
+
     /// vi-style modal editing on the command line: Escape for normal mode, then motions and
     /// operators. Off, the line behaves exactly as it always has.
     static var viCommandLine: Bool {
         get { bool("viCommandLine", default: false) }
         set { defaults.set(newValue, forKey: "viCommandLine") }
+    }
+
+    static let defaultFontSize = 13.0
+    static let fontSizeRange = 8.0...48.0
+    static let fontSizeChanged = Notification.Name("AccessTermFontSizeChanged")
+
+    /// Point size of the transcript, live line and command line (View > Make Text Bigger / Smaller).
+    static var fontSize: Double {
+        get {
+            let value = defaults.object(forKey: "fontSize") as? Double ?? defaultFontSize
+            return min(max(value, fontSizeRange.lowerBound), fontSizeRange.upperBound)
+        }
+        set {
+            defaults.set(min(max(newValue, fontSizeRange.lowerBound), fontSizeRange.upperBound), forKey: "fontSize")
+            NotificationCenter.default.post(name: fontSizeChanged, object: nil)
+        }
+    }
+
+    /// A short tone before an upper-case letter spoken on its own (moving the cursor onto it),
+    /// since VoiceOver announcements cannot carry a pitch. The raw value is the tone's pitch.
+    enum CapitalCue: Double {
+        case off = 0, low = 660, medium = 990, high = 1480
+    }
+
+    static var capitalCue: CapitalCue {
+        get {
+            guard let raw = defaults.object(forKey: "capitalCue") as? Double else { return .medium }
+            return CapitalCue(rawValue: raw) ?? .medium
+        }
+        set { defaults.set(newValue.rawValue, forKey: "capitalCue") }
     }
 }

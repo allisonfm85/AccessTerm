@@ -23,7 +23,7 @@ final class MainViewController: NSViewController,
     private let liveLabel = NSTextField(wrappingLabelWithString: "")
     private let inputLine = InputLineView()
 
-    private let monoFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    private var monoFont = NSFont.monospacedSystemFont(ofSize: CGFloat(Settings.fontSize), weight: .regular)
 
     /// The lines themselves live in the session, which builds them; the text view mirrors it.
     private var transcript: Transcript { session.transcript }
@@ -33,6 +33,11 @@ final class MainViewController: NSViewController,
     private var narrator = ScreenNarrator()
     /// Set while a frame is being handled when VoiceOver is to be told the cursor moved.
     private var cursorMovedForVoiceOver = false
+    /// True while the user is reviewing a full-screen program's screen (Command-1, or moving
+    /// focus to the transcript view). The program keeps running and its state keeps being
+    /// tracked, but the text view, its caret, speech and tones hold still until the review
+    /// ends, so a screen that redraws continuously (tmux, codex) can be read at leisure.
+    private var screenFrozen = false
     /// The last screen the full-screen program drew, with its cursor, for the commands that
     /// read the line, word or character at the cursor again.
     private var lastFrame: ScreenFrame?
@@ -52,6 +57,11 @@ final class MainViewController: NSViewController,
     /// completion beeps, and the report that follows explains, so "Attention" is not spoken.
     private var completionInFlight: String?
     private var completionTimeout: DispatchWorkItem?
+    /// An Up or Down sent to the shell and not yet answered: its direction, and the line that
+    /// was flushed ahead of it, to tell a recall that found nothing from one that did.
+    private var historyInFlight: (older: Bool, sent: String)?
+    /// A Control-R sent to the shell, waiting for its history.
+    private var historyListRequested = false
     /// Diagnostic only: ACCESSTERM_ECHO_DEBUG puts one line on stderr per committed line,
     /// saying how it was classified and whether it was announced. See logEchoDecisions.
     private let echoDebug = ProcessInfo.processInfo.environment["ACCESSTERM_ECHO_DEBUG"] != nil
@@ -121,6 +131,7 @@ final class MainViewController: NSViewController,
         inputLine.font = monoFont
         inputLine.placeholder = "Type a command and press Return"
         inputLine.delegate = self
+        inputLine.onFocus = { [weak self] in self?.resumeLiveScreen() }
         inputLine.bracketedPaste = { [weak self] in
             self?.session.bracketedPasteMode ?? false
         }
@@ -158,6 +169,8 @@ final class MainViewController: NSViewController,
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        NotificationCenter.default.addObserver(self, selector: #selector(fontSizeDidChange),
+                                               name: Settings.fontSizeChanged, object: nil)
         session.delegate = self
         appendExternal(["AccessTerm ready. Shell: /bin/zsh. Command-1 transcript, Command-2 command line."])
         session.start()
@@ -251,13 +264,44 @@ final class MainViewController: NSViewController,
         // changed nothing from one that produced text. A Tab while a program runs is that
         // program's business -- no report is coming -- and the timeout covers a shell that
         // never answers, so a stale flag cannot swallow a later bell.
-        if bytes == [0x09], !session.programIsRunning {
-            completionInFlight = text
-            completionTimeout?.cancel()
-            let timeout = DispatchWorkItem { [weak self] in self?.completionInFlight = nil }
-            completionTimeout = timeout
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: timeout)
+        // Up and Down at the prompt are history recall, answered the same way (a full-screen
+        // program or a running command gets the keys as its own and no report comes back).
+        let recall = (bytes == [0x1b, 0x5b, 0x41] || bytes == [0x1b, 0x5b, 0x42])
+            && screenLines == nil && !session.programIsRunning
+        if (bytes == [0x09] && !session.programIsRunning) || recall {
+            if recall {
+                historyInFlight = (older: bytes[2] == 0x41, sent: text)
+            } else {
+                completionInFlight = text
+            }
+            armInFlightTimeout()
         }
+    }
+
+    /// The shell has two seconds to answer a completion, a recall or a history request; after
+    /// that the flags are dropped, so a stale one cannot swallow a later bell.
+    private func armInFlightTimeout() {
+        completionTimeout?.cancel()
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if self.historyListRequested {
+                self.announcer.announceNow("History unavailable.", priority: .high)
+            }
+            self.completionInFlight = nil
+            self.historyInFlight = nil
+            self.historyListRequested = false
+        }
+        completionTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: timeout)
+    }
+
+    /// Control-R at the prompt: ask the shell for its history, and open the search when it
+    /// arrives. Nothing is flushed first -- what is typed stays here and comes back if the
+    /// search is cancelled.
+    func inputLineDidRequestHistorySearch(_ view: InputLineView) {
+        historyListRequested = true
+        session.send(bytes: [0x12])
+        armInFlightTimeout()
     }
 
     /// Names the saved-paste scripts in order within this app run. Static so that two
@@ -361,6 +405,38 @@ final class MainViewController: NSViewController,
     /// output after the very first line.
     private var shouldFollowOutput: Bool {
         view.window?.firstResponder !== textView || isCaretAtEnd
+    }
+
+    /// Brings the text view to `text` by changing only what differs, leaving the selection and
+    /// whatever VoiceOver holds alone where nothing changed.
+    private func patchText(to text: String) {
+        guard let storage = textView.textStorage,
+              let edit = TextDiff.minimalEdit(from: storage.string, to: text) else { return }
+        textView.withoutSelfVoicing {
+            storage.replaceCharacters(in: edit.range,
+                                      with: NSAttributedString(string: edit.replacement, attributes: textAttributes))
+        }
+    }
+
+    private static func screenText(_ rows: [String]) -> String { rows.map { $0 + "\n" }.joined() }
+
+    /// The program's cursor as an offset into the screen text.
+    private func screenCursorOffset(of rows: [String], frame: ScreenFrame?) -> Int? {
+        guard let frame else { return nil }
+        return ScreenText(rows: rows, cursorRow: frame.cursorRow, cursorCol: frame.cursorCol).cursor
+    }
+
+    /// Ends a review: the view catches up with the screen as it now is, the caret goes back
+    /// to the program's cursor, and the narrator is brought up to date without saying
+    /// anything, so what changed while frozen is not read out as one big difference.
+    private func resumeLiveScreen() {
+        guard screenFrozen else { return }
+        screenFrozen = false
+        guard let rows = screenLines else { return }
+        patchText(to: MainViewController.screenText(rows))
+        if let cursor = screenCursorOffset(of: rows, frame: lastFrame) { moveCaret(to: cursor) }
+        if tracksCursor, let frame = lastFrame { _ = narrator.narrate(frame) }
+        cursorMovedForVoiceOver = false
     }
 
     private func moveCaret(to offset: Int) {
@@ -802,7 +878,26 @@ final class MainViewController: NSViewController,
         if let screen = update.alternateScreen {
             let previous = screenLines
             screenLines = screen
-            setText(screen.map { $0 + "\n" }.joined())
+            // Focus in the transcript view while a program runs is a review. It holds the
+            // screen still; the program's state stays current underneath.
+            if previous != nil, !screenFrozen, view.window?.firstResponder === textView {
+                screenFrozen = true
+            } else if screenFrozen, view.window?.firstResponder !== textView {
+                resumeLiveScreen()
+            }
+            if screenFrozen {
+                if let frame = update.alternateFrame {
+                    lastFrame = frame
+                    inputLine.showScreen(ScreenText(rows: screen, cursorRow: frame.cursorRow,
+                                                    cursorCol: frame.cursorCol))
+                }
+                return
+            }
+            if previous == nil {
+                setText(MainViewController.screenText(screen))
+            } else {
+                patchText(to: MainViewController.screenText(screen))
+            }
             if previous == nil {
                 inputLine.passthrough = true
                 inputLine.placeholder = "Keys go to the program"
@@ -819,11 +914,15 @@ final class MainViewController: NSViewController,
                     narrator.scope = voiceOverReads ? .modesAndMessages : .everything
                     narrator.speaksSymbols = Settings.speakSymbols
                     narrator.indentation = Settings.indentation
+                    narrator.indentChangesOnly = Settings.indentChangesOnly
                     narrator.repeatThreshold = Settings.repeatThreshold
                     narration = narrator.narrate(frame)
                     // The tone goes ahead of the words it belongs to.
                     if !voiceOverReads, Settings.indentation == .tones, let tone = narrator.lastTone {
                         ToneSpeaker.play(indent: tone)
+                    }
+                    if !voiceOverReads, narrator.lastCapital, Settings.capitalCue != .off {
+                        ToneSpeaker.playCapital(hertz: Settings.capitalCue.rawValue)
                     }
                 }
                 if narration != nil, voiceOverReads, let frame = update.alternateFrame,
@@ -868,6 +967,7 @@ final class MainViewController: NSViewController,
 
         if screenLines != nil {
             screenLines = nil
+            screenFrozen = false
             narrator.reset()
             lastFrame = nil
             inputLine.showScreen(nil)
@@ -911,6 +1011,31 @@ final class MainViewController: NSViewController,
         }
     }
 
+    /// The shell recalled a line (Up or Down) and handed it back. The whole line is spoken,
+    /// as it would be if it had been typed; a recall that went nowhere says so.
+    func session(_ session: TerminalSession, didRecallLine buffer: String, cursor: Int) {
+        let pending = historyInFlight
+        historyInFlight = nil
+        completionTimeout?.cancel()
+        inputLine.adopt(buffer, caret: cursor)
+        if let pending, buffer == pending.sent {
+            announcer.announceNow(pending.older ? "No older command." : "End of history.",
+                                  priority: .high)
+        } else if buffer.isEmpty {
+            announcer.announceNow("Empty line.", priority: .high)
+        } else {
+            announcer.announceNow(buffer, priority: .high)
+        }
+    }
+
+    /// The shell's history, for the Control-R that asked for it.
+    func session(_ session: TerminalSession, didListHistory entries: [String]) {
+        guard historyListRequested else { return }
+        historyListRequested = false
+        completionTimeout?.cancel()
+        inputLine.beginSearch(entries: entries)
+    }
+
     /// The token the caret sits at the end of -- the word a completion just produced. The
     /// space a finished completion appends is stepped over first, so "git checkout " says
     /// "checkout" rather than nothing.
@@ -925,7 +1050,7 @@ final class MainViewController: NSViewController,
 
     func sessionDidRingBell(_ session: TerminalSession) {
         NSSound.beep()
-        if completionInFlight != nil {
+        if completionInFlight != nil || historyInFlight != nil {
             // A completion that found nothing beeps, and the report that follows says so in
             // words; "Attention" on top of that would be noise. The beep still sounds.
             return
@@ -980,11 +1105,39 @@ final class MainViewController: NSViewController,
             land(on: block.turns.last ?? block)
             return
         }
+        if let rows = screenLines {
+            // A full-screen program: freeze the screen as it is now and land on the program's
+            // cursor line, so the view can be read while the program goes on redrawing.
+            screenFrozen = true
+            patchText(to: MainViewController.screenText(rows))
+            let offset = screenCursorOffset(of: rows, frame: lastFrame) ?? lastLineStart
+            var line = ""
+            if let frame = lastFrame, frame.cursorRow >= 0, frame.cursorRow < rows.count {
+                line = rows[frame.cursorRow].trimmingCharacters(in: .whitespaces)
+            }
+            landCaret(at: offset, announcing: line.isEmpty ? "Screen paused" : "Screen paused. " + line)
+            return
+        }
         landCaret(at: lastCommandOffset ?? lastLineStart)
     }
 
+    /// While a full-screen program's screen is frozen for review: bring it up to date without
+    /// leaving, keeping the reading position.
+    @objc func refreshScreenSnapshot(_ sender: Any?) {
+        guard screenFrozen, let rows = screenLines else {
+            announcer.announceNow("No paused screen")
+            return
+        }
+        let was = textView.selectedRange().location
+        patchText(to: MainViewController.screenText(rows))
+        moveCaret(to: was)
+        announcer.announceNow("Screen refreshed")
+    }
+
     @objc func focusCommandLine(_ sender: Any?) {
-        view.window?.makeFirstResponder(inputLine)
+        let wasPaused = screenFrozen
+        view.window?.makeFirstResponder(inputLine)    // focus resumes a paused screen
+        if wasPaused { announcer.announceNow("Live screen resumed") }
     }
 
     @objc func goToEnd(_ sender: Any?) {
@@ -1013,6 +1166,7 @@ final class MainViewController: NSViewController,
         var reader = narrator
         reader.speaksSymbols = Settings.speakSymbols
         reader.indentation = Settings.indentation
+        reader.indentChangesOnly = Settings.indentChangesOnly
         reader.repeatThreshold = Settings.repeatThreshold
         let said: String
         if let frame = lastFrame {
@@ -1022,7 +1176,11 @@ final class MainViewController: NSViewController,
                 said = reading.line
                 if let tone = reading.tone, Settings.indentation == .tones { ToneSpeaker.play(indent: tone) }
             case .word: said = reading.word
-            case .character: said = reading.character
+            case .character:
+                said = reading.character
+                if said.count == 1, said.first!.isLetter, said.first!.isUppercase, Settings.capitalCue != .off {
+                    ToneSpeaker.playCapital(hertz: Settings.capitalCue.rawValue)
+                }
             }
         } else {
             let chars = Array(inputLine.text)
@@ -1068,6 +1226,24 @@ final class MainViewController: NSViewController,
         announcer.announceNow(["Indentation off", "Indentation tones", "Indentation spoken"][sender.tag])
     }
 
+    @objc func toggleIndentChangesOnly(_ sender: Any?) {
+        Settings.indentChangesOnly.toggle()
+        announcer.announceNow(Settings.indentChangesOnly ? "Indentation only when it changes"
+                                                         : "Indentation on every line")
+    }
+
+    @objc func setCapitalCue(_ sender: NSMenuItem) {
+        let choices: [Settings.CapitalCue] = [.off, .low, .medium, .high]
+        guard sender.tag >= 0, sender.tag < choices.count else { return }
+        Settings.capitalCue = choices[sender.tag]
+        if choices[sender.tag] == .off {
+            announcer.announceNow("Capital letter cue off")
+        } else {
+            ToneSpeaker.playCapital(hertz: choices[sender.tag].rawValue)
+            announcer.announceNow("Capital letter cue \(["off", "low", "medium", "high"][sender.tag])")
+        }
+    }
+
     @objc func setRepeatThreshold(_ sender: NSMenuItem) {
         Settings.repeatThreshold = sender.tag
         announcer.announceNow(sender.tag == 0 ? "Repeated symbols not counted"
@@ -1110,6 +1286,41 @@ final class MainViewController: NSViewController,
         announcer.announceNow(announce)
     }
 
+    // MARK: - Font size
+
+    @objc func increaseFontSize(_ sender: Any?) { changeFontSize(to: Settings.fontSize + 1) }
+    @objc func decreaseFontSize(_ sender: Any?) { changeFontSize(to: Settings.fontSize - 1) }
+    @objc func resetFontSize(_ sender: Any?) { changeFontSize(to: Settings.defaultFontSize) }
+
+    private func changeFontSize(to size: Double) {
+        let old = Settings.fontSize
+        Settings.fontSize = size.rounded()
+        let now = Settings.fontSize
+        if now == old && size.rounded() != now {
+            announcer.announceNow(now == Settings.fontSizeRange.upperBound ? "Largest size" : "Smallest size")
+        } else {
+            announcer.announceNow("Font size \(Int(now))")
+        }
+    }
+
+    @objc private func fontSizeDidChange() {
+        let size = CGFloat(Settings.fontSize)
+        monoFont = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        textView.font = monoFont
+        liveLabel.font = monoFont
+        inputLine.font = monoFont
+        if let storage = textView.textStorage, storage.length > 0 {
+            textView.withoutSelfVoicing {
+                storage.beginEditing()
+                storage.enumerateAttribute(.font, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                    let font = (value as? NSFont) ?? self.monoFont
+                    storage.addAttribute(.font, value: NSFontManager.shared.convert(font, toSize: size), range: range)
+                }
+                storage.endEditing()
+            }
+        }
+    }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleSpeakOutput(_:)) {
             menuItem.state = announcer.enabled ? .on : .off
@@ -1123,6 +1334,10 @@ final class MainViewController: NSViewController,
         case #selector(toggleSpeakSymbols(_:)): menuItem.state = Settings.speakSymbols ? .on : .off
         case #selector(setIndentation(_:)):
             let current: Int = [ScreenNarrator.Indentation.off: 0, .tones: 1, .spoken: 2][Settings.indentation] ?? 2
+            menuItem.state = menuItem.tag == current ? .on : .off
+        case #selector(toggleIndentChangesOnly(_:)): menuItem.state = Settings.indentChangesOnly ? .on : .off
+        case #selector(setCapitalCue(_:)):
+            let current = [Settings.CapitalCue.off: 0, .low: 1, .medium: 2, .high: 3][Settings.capitalCue] ?? 2
             menuItem.state = menuItem.tag == current ? .on : .off
         case #selector(setRepeatThreshold(_:)):
             menuItem.state = menuItem.tag == Settings.repeatThreshold ? .on : .off

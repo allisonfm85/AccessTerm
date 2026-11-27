@@ -255,9 +255,17 @@ work from anywhere in the window.
   treats anything over about sixty bytes as a paste -- which used to mean a long line's Return
   was read as pasted text rather than "send this", and nothing happened. When the program has
   asked for bracketed paste, the text is wrapped in the paste markers too.
-- **Up/Down**: the shell's own history. Anything typed and not yet sent goes to the shell
-  first, so that its line and this one do not disagree; from then on you are editing the line
-  the shell holds, which the Current line shows.
+- **Up/Down**: the shell's own history, recalled into this command line. Anything typed and
+  not yet sent goes to the shell first, so Down past the newest command brings it back. The
+  whole recalled command is spoken, and "No older command" or "End of history" says when
+  there is nowhere to go. zsh keeps the history, so `HISTFILE`, `HISTSIZE` and your dedupe
+  options apply. Inside a full-screen program or a running command, Up and Down are that
+  program's keys, as before.
+- **Control-R**: reverse search through the shell's history (the newest 3000 commands). Type
+  to search; each change speaks the match, or "No match". Control-R again finds an older
+  match, Control-S a newer one, Delete shortens the search. Return runs the match; Tab, the
+  arrows, Home, End and Control-A/E put it on the line to edit; Escape or Control-G cancels
+  and leaves what you had typed. In vi normal mode Control-R is redo, as it is in vi.
 - **Tab**: shell completion, the same way -- what you have typed goes first, so there is
   something to complete.
 - **Left/Right**: move the caret one character, and the character you moved over is read out.
@@ -307,7 +315,7 @@ In normal mode, with an optional count in front (`3w`, `2x`):
 | `r` + a character, `~` | Replace a character; flip the case |
 | `p` `P` | Put what was last deleted or yanked, after or before the caret |
 | `u`, Control-R | Undo and redo. Typing in insert mode counts as one change |
-| `k` `j` | The shell's history, older and newer, like Up and Down (not working yet; see Known issues) |
+| `k` `j` | The shell's history, older and newer, like Up and Down |
 | Escape | Cancels a half-typed command |
 
 This applies only at the shell's own prompt. While a command is running (Claude Code, a REPL,
@@ -430,6 +438,20 @@ one thing for them to work on.
   cursor is, see [Editors: vim and nvim](#editors-vim-and-nvim); the rest speak the rows
   that changed.
 
+### Reviewing a screen that keeps redrawing
+
+A full-screen program's screen is shown in the transcript view, and a program that redraws all
+the time (tmux, codex, Claude Code) used to rewrite it under you. **Command-1** now pauses the
+screen: it lands on the program's cursor line, says "Screen paused", and the view, its caret
+and the speech hold still while you read with the arrow keys, however much the program draws.
+The program carries on underneath, and keys you type in the transcript view do not reach it.
+**Command-Shift-1** brings the paused screen up to date and keeps your place. **Command-2**
+returns to the program, resumes the live screen and puts the caret back on the program's
+cursor; nothing that changed meanwhile is read out as a burst. Moving focus to the transcript
+view any other way pauses it in the same way. If the program exits while you are paused, the
+transcript replaces the screen as usual. Even when not paused, only the rows that changed are
+touched, so an unchanged screen no longer disturbs VoiceOver.
+
 ## Editors: vim and nvim
 
 While a full-screen program owns the screen, keys go straight to it, so modal editing works
@@ -463,7 +485,11 @@ launches:
 - **Indentation** chooses how a change of indentation is made known when a whole line is
   announced: **Spoken** (the default) says "indent 4" when a line's indent differs from the
   last line read, and "no indent" when it drops back; **Tones** plays a short tone before each
-  indented line, higher for deeper; **Not Announced** says nothing.
+  indented line, higher for deeper; **Not Announced** says nothing. **Only When Indentation
+  Changes** (on by default) keeps both quiet while consecutive lines are indented alike -- a
+  line at the same indent as the last one announced gets no indent, tone or otherwise, and a
+  different indent is announced afresh. Turn it off to hear the indent on every indented line.
+  Read Cursor Line always says the indent.
 - **Count Repeated Symbols** says a long run of one symbol as a count: a line of 50 `#` is
   "50 hash". Choose the length a run must reach (3, 4 by default, 5, 6, 8, 10, 16) or turn it
   off. Letters, digits and blanks are never counted, and one character read on its own is
@@ -609,13 +635,6 @@ heard a syllable of the line and then the command. The notification is no longer
 there is something to announce, and the view reports nothing readable until the announcement
 goes out, so the announcement is the only voice. Unlike the focus read, this path does consult
 the attributes the view reports.
-
-**Recalling an earlier command does not work.** Pressing Up or Down at the prompt, or `k` or
-`j` in vi-style normal mode, does not bring back an earlier command. Up and Down send the key
-to the shell, which recalls the command into its own line rather than into AccessTerm's
-command line, so the recalled command cannot be heard or edited there, and vi-style editing
-has nothing to work on. The likely fix is to bring a recalled command home to the command line
-the way Tab completion already does. Help is welcome.
 
 ## Milestones
 
